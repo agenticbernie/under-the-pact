@@ -18,6 +18,12 @@ export interface LlmConfig {
   baseUrl: string
   apiKey: string
   model: string
+  /**
+   * Sampling temperature. Omitted when undefined: newer reasoning models
+   * (e.g. gpt-5.6-luna) reject any explicit value and require the default.
+   * Set LLM_TEMPERATURE=0 only for models that support it.
+   */
+  temperature?: number
 }
 
 export class LlmClient extends Effect.Service<LlmClient>()("LlmClient", {
@@ -36,6 +42,17 @@ export class LlmClient extends Effect.Service<LlmClient>()("LlmClient", {
             })
           }
           const url = `${config.baseUrl.replace(/\/$/, "")}/chat/completions`
+          const payload: Record<string, unknown> = {
+            model: config.model,
+            response_format: { type: "json_object" },
+            messages: [
+              { role: "system", content: system },
+              { role: "user", content: user }
+            ]
+          }
+          if (config.temperature !== undefined) {
+            payload["temperature"] = config.temperature
+          }
           const res = yield* Effect.tryPromise({
             try: () =>
               fetch(url, {
@@ -44,15 +61,7 @@ export class LlmClient extends Effect.Service<LlmClient>()("LlmClient", {
                   "Content-Type": "application/json",
                   Authorization: `Bearer ${config.apiKey}`
                 },
-                body: JSON.stringify({
-                  model: config.model,
-                  temperature: 0,
-                  response_format: { type: "json_object" },
-                  messages: [
-                    { role: "system", content: system },
-                    { role: "user", content: user }
-                  ]
-                }),
+                body: JSON.stringify(payload),
                 signal: AbortSignal.timeout(15_000)
               }),
             catch: (cause) =>
@@ -65,9 +74,20 @@ export class LlmClient extends Effect.Service<LlmClient>()("LlmClient", {
               })
           })
           if (!res.ok) {
+            // Surface the upstream message (bounded): "HTTP 400" alone
+            // is unactionable when a model rejects a parameter.
+            const detail = yield* Effect.tryPromise({
+              try: () => res.text(),
+              catch: () =>
+                new LlmError({
+                  reason: "bad_status",
+                  message: "Could not read the upstream error body.",
+                  status: res.status
+                })
+            })
             return yield* new LlmError({
               reason: "bad_status",
-              message: `LLM API returned HTTP ${res.status}.`,
+              message: `LLM API returned HTTP ${res.status}: ${detail.slice(0, 200)}`,
               status: res.status
             })
           }

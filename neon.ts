@@ -37,6 +37,7 @@ export default defineConfig({
             process.env["LLM_BASE_URL"] ?? "https://api.openai.com/v1",
           LLM_MODEL: process.env["LLM_MODEL"] ?? "gpt-4o-mini",
           LLM_API_KEY: process.env["LLM_API_KEY"] ?? "",
+          LLM_TEMPERATURE: process.env["LLM_TEMPERATURE"] ?? "",
           INTENT_TTL_SECONDS: process.env["INTENT_TTL_SECONDS"] ?? "900"
         },
         dev: { port: 8787 }

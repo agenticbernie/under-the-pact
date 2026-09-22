@@ -103,6 +103,13 @@ export const createApp = (opts: AppOptions = {}) => {
       const apiKey = yield* Config.string("LLM_API_KEY").pipe(
         Config.withDefault("")
       )
+      // Optional: blank/parse-fail means "omit" (model default).
+      // gpt-5.6-luna rejects explicit temperature values.
+      const tempRaw = yield* Config.string("LLM_TEMPERATURE").pipe(
+        Config.withDefault("")
+      )
+      const tempParsed = tempRaw.trim().length === 0 ? NaN : Number(tempRaw)
+      const temperature = Number.isFinite(tempParsed) ? tempParsed : undefined
       const ttlSeconds = yield* Config.number("INTENT_TTL_SECONDS").pipe(
         Config.withDefault(900)
       )
@@ -117,7 +124,7 @@ export const createApp = (opts: AppOptions = {}) => {
           cfg.merchant.merchantId
         ),
         ttlSeconds,
-        llm: { baseUrl, apiKey, model }
+        llm: { baseUrl, apiKey, model, temperature }
       }
       const result = yield* parsePaymentIntent(shaped.right.text, ctx).pipe(
         Effect.catchAll((e) =>
