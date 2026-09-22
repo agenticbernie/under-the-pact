@@ -16,10 +16,47 @@ describe("api skeleton (BER-129)", () => {
     expect(typeof body.network).toBe("string")
   })
 
-  it("POST /api/intent/parse is 501 until BER-132", async () => {
+  it("POST /api/intent/parse rejects empty / blank / oversize text with 400", async () => {
     const app = createApp()
-    const res = await app.request("/api/intent/parse", { method: "POST" })
+    for (const text of ["", "   \n  ", "x".repeat(2001)]) {
+      const res = await app.request("/api/intent/parse", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text })
+      })
+      expect(res.status).toBe(400)
+      const body = (await res.json()) as { ok: boolean; code: string }
+      expect(body.ok).toBe(false)
+      expect(body.code).toBe("INVALID_REQUEST")
+    }
+  })
+
+  it("POST /api/intent/parse rejects non-JSON and missing text with 400", async () => {
+    const app = createApp()
+    const notJson = await app.request("/api/intent/parse", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "not-json{{{"
+    })
+    expect(notJson.status).toBe(400)
+    const missing = await app.request("/api/intent/parse", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({})
+    })
+    expect(missing.status).toBe(400)
+  })
+
+  it("POST /api/intent/parse passes valid text to the parser layer (501 until BER-132)", async () => {
+    const app = createApp()
+    const res = await app.request("/api/intent/parse", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "  Pay 5 USDC to Pact Coffee  " })
+    })
     expect(res.status).toBe(501)
+    const body = (await res.json()) as { ok: boolean; code: string }
+    expect(body.code).toBe("PARSER_ERROR")
   })
 })
 

@@ -81,5 +81,8 @@ Never commit any `.env*` file (only `.env.example` is tracked) or private keys (
 
 ## What lands next
 
-- BER-130 input UI, BER-131 full intent schema, BER-132 parser stub→real,
+- BER-130 input UI ✅ (this branch): NL textarea + client fast-fail +
+  server `PaymentRequest` validation (400 INVALID_REQUEST); valid text
+  reaches the parser layer (501 PARSER_ERROR until BER-132).
+- BER-131 full intent schema, BER-132 parser stub→real,
   BER-133 merchant registry, BER-138 wallet adapter (Sprint 2).
