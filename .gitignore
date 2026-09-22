@@ -1,0 +1,15 @@
+# Deps & build
+node_modules/
+dist/
+.astro/
+.output/
+*.tsbuildinfo
+
+# Env — never commit real secrets (REQ-S-008).
+# Ignores every env file (.env, .env.local, .env.production, ...) except the template.
+.env*
+!.env.example
+
+# OS / editor
+.DS_Store
+*.log
