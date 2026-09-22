@@ -4,15 +4,19 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server.ts",
+    "predev": "pnpm --filter @pact/shared build",
     "build": "tsc -p tsconfig.json",
+    "prebuild": "pnpm --filter @pact/shared build",
     "start": "node dist/server.js",
     "test": "vitest run",
+    "pretest": "pnpm --filter @pact/shared build",
     "lint": "tsc --noEmit -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.7",
     "@pact/shared": "workspace:*",
+    "dotenv": "^18.0.1",
     "effect": "^3.16.6",
     "hono": "^4.7.5",
     "pg": "^8.13.1"

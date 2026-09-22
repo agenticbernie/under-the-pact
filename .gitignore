@@ -5,10 +5,9 @@ dist/
 .output/
 *.tsbuildinfo
 
-# Env — never commit real secrets (REQ-S-008)
-.env
-.env.local
-.env.*.local
+# Env — never commit real secrets (REQ-S-008).
+# Ignores every env file (.env, .env.local, .env.production, ...) except the template.
+.env*
 !.env.example
 
 # OS / editor

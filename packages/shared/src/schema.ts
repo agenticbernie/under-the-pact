@@ -1,4 +1,5 @@
 import { Schema } from "effect"
+import base58 from "bs58"
 
 /**
  * BER-131 placeholder: canonical PaymentIntent schema.
@@ -9,6 +10,25 @@ import { Schema } from "effect"
 
 export const SolanaNetwork = Schema.Literal("devnet", "testnet", "mainnet-beta")
 export type SolanaNetwork = typeof SolanaNetwork.Type
+
+/**
+ * Base58-encoded 32-byte Solana public key (wallet or mint).
+ * Full format gate lives here so BER-133 (merchant registry) reuses it.
+ */
+const isSolanaAddress = (s: string): boolean => {
+  try {
+    return base58.decode(s).length === 32
+  } catch {
+    return false
+  }
+}
+
+export const SolanaAddress = Schema.String.pipe(
+  Schema.filter(isSolanaAddress, {
+    message: () => "expected a base58 Solana public key (32 bytes)"
+  })
+).pipe(Schema.annotations({ identifier: "SolanaAddress" }))
+export type SolanaAddress = typeof SolanaAddress.Type
 
 export const PaymentStatus = Schema.Literal(
   "DRAFT",
@@ -39,8 +59,8 @@ export type PaymentIntent = typeof PaymentIntent.Type
 export const MerchantConfig = Schema.Struct({
   merchantId: Schema.String,
   displayName: Schema.String,
-  recipientWallet: Schema.String,
-  supportedTokenMint: Schema.String,
+  recipientWallet: SolanaAddress,
+  supportedTokenMint: SolanaAddress,
   network: SolanaNetwork,
   spendingLimitUsdc: Schema.Number,
   active: Schema.Boolean

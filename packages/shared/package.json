@@ -15,6 +15,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "bs58": "^6.0.0",
     "effect": "^3.16.6"
   },
   "devDependencies": {

@@ -25,6 +25,10 @@ pnpm dev
 # web: http://localhost:4321 — api: http://localhost:8787/api/health
 ```
 
+`pnpm dev` / `pnpm test` auto-build `@pact/shared` first (pre-scripts),
+because the API imports it from built `dist`. The API loads the
+monorepo-root `.env` via dotenv; on Neon Functions vars are injected.
+
 Single-slice dev:
 
 ```bash
@@ -56,11 +60,22 @@ MERCHANT_DISPLAY_NAME, MERCHANT_WALLET, SPENDING_LIMIT_USDC, DATABASE_URL`.
 Neon Functions injects `DATABASE_URL` on deploy. Locally `/api/health`
 works with `db: not-configured` until a Neon branch exists.
 
-Never commit `.env` / `.env.local` / private keys (REQ-S-008).
+`MERCHANT_WALLET` is required and pubkey-validated at boot — a missing or
+placeholder wallet fails startup instead of reporting healthy. The
+`.env.example` dummy is the system program address (format-valid only);
+replace it with the real devnet recipient before the demo (BER-133 locks it).
+
+Never commit any `.env*` file (only `.env.example` is tracked) or private keys (REQ-S-008).
 
 ## Deploy sketch
 
-- API: `neon deploy` (see `neon.ts`, project region `aws-us-east-2`)
+- API: `pnpm deploy:api` (builds `@pact/shared`, then `neon deploy` —
+  the CLI bundles `apps/api/src` with esbuild, so shared must be built;
+  see `neon.ts`, function slug `pactapi`, project region `aws-us-east-2`).
+  Needs the `neon` CLI (`npm i -g neon@latest`, also a workspace devDep)
+  and a linked project (`neon link`). Pass secrets via
+  `neon deploy --env .env.production`.
+  Local function dev: `neon dev` (hot reload + injected `DATABASE_URL`).
 - Web: Cloudflare Pages, root `apps/web`, build `pnpm --filter @pact/web build`,
   env `PUBLIC_API_URL=<neon function URL>`, allow origin in Hono CORS.
 

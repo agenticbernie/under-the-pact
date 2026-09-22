@@ -1,5 +1,12 @@
+import { config as loadEnv } from "dotenv"
 import { serve } from "@hono/node-server"
 import app from "./app.js"
+
+// Load the monorepo-root .env for local runs (Codex P2: quickstart copies
+// .env.example -> .env, so the API must actually read it).
+// pnpm --filter runs with cwd = apps/api, hence the explicit root path.
+// On Neon Functions DATABASE_URL etc. are injected; missing file is a no-op.
+loadEnv({ path: new URL("../../../.env", import.meta.url) })
 
 /**
  * Local dev entry. Neon Functions uses `app` (fetch handler) directly —

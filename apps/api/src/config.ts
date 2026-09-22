@@ -1,5 +1,5 @@
-import { Config, Effect, Layer, Schema } from "effect"
-import { MerchantConfig } from "@pact/shared"
+import { Config, Effect, Schema } from "effect"
+import { MerchantConfig, SolanaNetwork } from "@pact/shared"
 
 /**
  * Centralized, env-driven config (REQ-S-007/008, BER-129 AC#2).
@@ -7,36 +7,74 @@ import { MerchantConfig } from "@pact/shared"
  * Neon Functions injects DATABASE_URL automatically; locally it comes from .env.
  */
 
-const SolanaNetworkSchema = Schema.Literal("devnet", "testnet", "mainnet-beta")
+const SolanaNetworkSchema = SolanaNetwork
 
 export const PactConfig = Schema.Struct({
   solanaNetwork: SolanaNetworkSchema,
   solanaRpcUrl: Schema.String,
-  usdcMint: Schema.NonEmptyString,
+  usdcMint: Schema.String,
   merchant: MerchantConfig,
   databaseUrl: Schema.optional(Schema.String)
 })
 export type PactConfig = typeof PactConfig.Type
 
+/**
+ * Per-network safe defaults (Codex P1: no cross-network silent reuse).
+ * testnet has NO known USDC mint placeholder — omitting USDC_MINT there
+ * is a boot error, never a silent devnet value.
+ */
+const NETWORK_DEFAULTS: Record<
+  SolanaNetwork,
+  { rpcUrl: string; usdcMint: string | undefined }
+> = {
+  devnet: {
+    rpcUrl: "https://api.devnet.solana.com",
+    usdcMint: "4zMMC9sEqf9MKyRbf3Tx3sQAr1BLWnCQcHjEXtGbm4o"
+  },
+  testnet: {
+    rpcUrl: "https://api.testnet.solana.com",
+    usdcMint: undefined
+  },
+  "mainnet-beta": {
+    rpcUrl: "https://api.mainnet-beta.solana.com",
+    usdcMint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+  }
+}
+
 const configFromEnv = Effect.gen(function*() {
-  const solanaNetwork = yield* Config.string("SOLANA_NETWORK").pipe(
+  const rawNetwork = yield* Config.string("SOLANA_NETWORK").pipe(
     Config.withDefault("devnet")
   )
+  const solanaNetwork = yield* Schema.decodeUnknown(SolanaNetworkSchema)(
+    rawNetwork
+  )
+  const defaults = NETWORK_DEFAULTS[solanaNetwork]
+
   const solanaRpcUrl = yield* Config.string("SOLANA_RPC_URL").pipe(
-    Config.withDefault("https://api.devnet.solana.com")
+    Config.withDefault(defaults.rpcUrl)
   )
-  const usdcMint = yield* Config.string("USDC_MINT").pipe(
-    Config.withDefault("4zMMC9sEqf9MKyRbf3Tx3sQAr1BLWnCQcHjEXtGbm4o")
-  )
+
+  let usdcMint: string
+  if (defaults.usdcMint !== undefined) {
+    usdcMint = yield* Config.string("USDC_MINT").pipe(
+      Config.withDefault(defaults.usdcMint)
+    )
+  } else {
+    // No safe default for this network — require explicit value.
+    usdcMint = yield* Config.string("USDC_MINT")
+  }
+
   const merchantId = yield* Config.string("MERCHANT_ID").pipe(
     Config.withDefault("pact-coffee-demo")
   )
   const displayName = yield* Config.string("MERCHANT_DISPLAY_NAME").pipe(
     Config.withDefault("Pact Coffee Demo")
   )
-  const recipientWallet = yield* Config.string("MERCHANT_WALLET").pipe(
-    Config.withDefault("REPLACE_WITH_DEVNET_RECIPIENT_WALLET")
-  )
+  // Required + pubkey-validated by MerchantConfig schema below.
+  // No placeholder default: a missing/invalid wallet must fail boot,
+  // never report healthy (Codex P2). Use a real devnet wallet or, for
+  // local skeleton runs only, the system program address from .env.example.
+  const recipientWallet = yield* Config.string("MERCHANT_WALLET")
   const spendingLimitUsdc = yield* Config.number("SPENDING_LIMIT_USDC").pipe(
     Config.withDefault(50)
   )
