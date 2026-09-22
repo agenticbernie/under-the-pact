@@ -6,21 +6,40 @@ const apiUrl = import.meta.env.PUBLIC_API_URL ?? "http://localhost:8787";
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Pact — Confirmation-first USDC payments (PoC skeleton)</title>
+    <title>Pact — Confirmation-first USDC payments (PoC)</title>
     <style>
       body { font-family: system-ui, sans-serif; max-width: 720px; margin: 48px auto; padding: 0 20px; line-height: 1.6; }
       .card { border: 1px solid #ddd; border-radius: 12px; padding: 20px; margin: 16px 0; }
       code { background: #f4f4f4; padding: 2px 6px; border-radius: 6px; }
       #health { font-weight: 600; }
+      textarea { width: 100%; min-height: 84px; font: inherit; padding: 10px; border-radius: 8px; border: 1px solid #ccc; box-sizing: border-box; }
+      button { font: inherit; padding: 8px 20px; border-radius: 8px; border: 1px solid #333; background: #111; color: #fff; cursor: pointer; }
+      button:disabled { opacity: 0.5; cursor: wait; }
+      #req-error { color: #a00; min-height: 1.5em; }
+      #req-status { min-height: 1.5em; }
+      .hint { color: #666; font-size: 0.9em; }
     </style>
   </head>
   <body>
-    <h1>Pact PoC — BER-129 skeleton</h1>
+    <h1>Pact PoC — payment request</h1>
     <p>
       Confirmation-first AI payment agent for controlled USDC payments on Solana.
-      This skeleton proves FE ↔ BE wiring. Full input / intent / validation
-      land in BER-130 → BER-137. No transaction is created here (Sprint Gate).
+      Describe the payment below. Nothing here creates a transaction (Sprint Gate).
     </p>
+    <div class="card">
+      <h3>1. Payment request (BER-130)</h3>
+      <form id="req-form">
+        <textarea
+          id="req-text"
+          maxlength="2000"
+          placeholder="e.g. Pay 5 USDC to Pact Coffee for oat latte"
+        ></textarea>
+        <div class="hint"><span id="req-count">0</span>/2000 — intent parsing lands in BER-132.</div>
+        <p><button type="submit" id="req-submit">Submit request</button></p>
+      </form>
+      <div id="req-error" role="alert"></div>
+      <div id="req-status" aria-live="polite"></div>
+    </div>
     <div class="card">
       <div>Backend: <code id="api-url">{apiUrl}</code></div>
       <div>Health: <span id="health">checking…</span></div>
@@ -30,6 +49,56 @@ const apiUrl = import.meta.env.PUBLIC_API_URL ?? "http://localhost:8787";
       <h3>Trust boundary (PRD §9)</h3>
       <p>AI proposes → deterministic code validates → user confirms → wallet signs → Solana verifies.</p>
     </div>
+    <script>
+      import { validateRequestText } from "../lib/request.js";
+
+      const apiUrl = document.getElementById("api-url")?.textContent ?? "http://localhost:8787";
+      const form = document.getElementById("req-form") as HTMLFormElement;
+      const input = document.getElementById("req-text") as HTMLTextAreaElement;
+      const error = document.getElementById("req-error") as HTMLDivElement;
+      const status = document.getElementById("req-status") as HTMLDivElement;
+      const count = document.getElementById("req-count") as HTMLSpanElement;
+      const submit = document.getElementById("req-submit") as HTMLButtonElement;
+
+      input.addEventListener("input", () => {
+        count.textContent = String(input.value.length);
+        error.textContent = "";
+      });
+
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        error.textContent = "";
+        status.textContent = "";
+        const checked = validateRequestText(input.value);
+        if (!checked.ok) {
+          error.textContent = checked.error;
+          return;
+        }
+        submit.disabled = true;
+        status.textContent = "Sending to intent parser…";
+        try {
+          const res = await fetch(`${apiUrl}/api/intent/parse`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text: checked.text })
+          });
+          const body = (await res.json()) as { ok: boolean; code: string; message: string };
+          if (res.status === 501 && body.code === "PARSER_ERROR") {
+            status.textContent = "Received by the backend — intent parsing lands in BER-132.";
+          } else if (!res.ok) {
+            error.textContent = body.message || `Request rejected (${body.code || res.status}).`;
+            status.textContent = "";
+          } else {
+            status.textContent = JSON.stringify(body);
+          }
+        } catch (err) {
+          error.textContent = "Backend not reachable — start pnpm dev:api.";
+          status.textContent = "";
+        } finally {
+          submit.disabled = false;
+        }
+      });
+    </script>
     <script define:vars={{ apiUrl }}>
       fetch(`${apiUrl}/api/health`)
         .then((r) => r.json())

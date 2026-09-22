@@ -1,6 +1,11 @@
 import { Hono } from "hono"
 import { cors } from "hono/cors"
-import { Effect } from "effect"
+import { Effect, Schema } from "effect"
+import {
+  normalizeRequestText,
+  PaymentRequest,
+  PolicyErrorCode
+} from "@pact/shared"
 import { PactConfigLive, PactConfigService } from "./config.js"
 
 /**
@@ -41,12 +46,44 @@ export const createApp = () => {
     return c.json(result)
   })
 
-  // BER-132 stub: proves FE→BE wiring for the NL request. Always 501 until parser lands.
+  // BER-130: accept the NL request, reject empty/invalid shape with 400.
+  // Valid text reaches the parser layer — which lands in BER-132, so a
+  // well-formed request still answers 501 until then (proves handoff).
   app.post("/api/intent/parse", async (c) => {
+    let body: unknown
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json(
+        {
+          ok: false,
+          code: PolicyErrorCode.INVALID_REQUEST,
+          message: "Request body must be JSON with a 'text' field."
+        },
+        400
+      )
+    }
+    const raw = body as { text?: unknown }
+    const candidate = {
+      text:
+        typeof raw.text === "string" ? normalizeRequestText(raw.text) : raw.text
+    }
+    const parsed = Schema.decodeUnknownEither(PaymentRequest)(candidate)
+    if (parsed._tag === "Left") {
+      return c.json(
+        {
+          ok: false,
+          code: PolicyErrorCode.INVALID_REQUEST,
+          message:
+            "Payment request must be 1-2000 non-blank characters in 'text'."
+        },
+        400
+      )
+    }
     return c.json(
       {
         ok: false,
-        code: "PARSER_ERROR",
+        code: PolicyErrorCode.PARSER_ERROR,
         message: "Intent parser not implemented (BER-132). Skeleton only."
       },
       501

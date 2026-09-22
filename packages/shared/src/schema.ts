@@ -66,3 +66,28 @@ export const MerchantConfig = Schema.Struct({
   active: Schema.Boolean
 }).pipe(Schema.annotations({ identifier: "MerchantConfig" }))
 export type MerchantConfig = typeof MerchantConfig.Type
+
+/**
+ * BER-130: raw natural-language payment request (REQ-F-001).
+ * Trimmed client- and server-side; blank or over-long input is rejected
+ * before it can reach the intent parser (BER-132).
+ */
+export const MAX_REQUEST_CHARS = 2000
+
+export const PaymentRequest = Schema.Struct({
+  text: Schema.String.pipe(
+    Schema.minLength(1, {
+      message: () => "payment request must not be empty"
+    }),
+    Schema.maxLength(MAX_REQUEST_CHARS, {
+      message: () => `payment request must be at most ${MAX_REQUEST_CHARS} characters`
+    }),
+    Schema.filter((s) => s.trim().length > 0, {
+      message: () => "payment request must not be blank"
+    })
+  )
+}).pipe(Schema.annotations({ identifier: "PaymentRequest" }))
+export type PaymentRequest = typeof PaymentRequest.Type
+
+/** Canonical normalization applied by every consumer before validation. */
+export const normalizeRequestText = (s: string): string => s.trim()
