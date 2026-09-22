@@ -1,0 +1,19 @@
+/**
+ * Stable machine-readable reason codes (BER-131/134/135).
+ * Declared in BER-129 so every layer imports from one place.
+ * Policy engine must return one of these — never a free-form string.
+ */
+export const PolicyErrorCode = {
+  UNKNOWN_MERCHANT: "UNKNOWN_MERCHANT",
+  WRONG_NETWORK: "WRONG_NETWORK",
+  WRONG_MINT: "WRONG_MINT",
+  INVALID_AMOUNT: "INVALID_AMOUNT",
+  OVER_LIMIT: "OVER_LIMIT",
+  RECIPIENT_MISMATCH: "RECIPIENT_MISMATCH",
+  EXPIRED: "EXPIRED",
+  DUPLICATE_INTENT: "DUPLICATE_INTENT",
+  NOT_VALIDATED: "NOT_VALIDATED",
+  PARSER_ERROR: "PARSER_ERROR",
+  AMBIGUOUS_REQUEST: "AMBIGUOUS_REQUEST"
+} as const
+export type PolicyErrorCode = (typeof PolicyErrorCode)[keyof typeof PolicyErrorCode]

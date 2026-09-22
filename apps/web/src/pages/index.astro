@@ -1,0 +1,46 @@
+---
+const apiUrl = import.meta.env.PUBLIC_API_URL ?? "http://localhost:8787";
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Pact — Confirmation-first USDC payments (PoC skeleton)</title>
+    <style>
+      body { font-family: system-ui, sans-serif; max-width: 720px; margin: 48px auto; padding: 0 20px; line-height: 1.6; }
+      .card { border: 1px solid #ddd; border-radius: 12px; padding: 20px; margin: 16px 0; }
+      code { background: #f4f4f4; padding: 2px 6px; border-radius: 6px; }
+      #health { font-weight: 600; }
+    </style>
+  </head>
+  <body>
+    <h1>Pact PoC — BER-129 skeleton</h1>
+    <p>
+      Confirmation-first AI payment agent for controlled USDC payments on Solana.
+      This skeleton proves FE ↔ BE wiring. Full input / intent / validation
+      land in BER-130 → BER-137. No transaction is created here (Sprint Gate).
+    </p>
+    <div class="card">
+      <div>Backend: <code id="api-url">{apiUrl}</code></div>
+      <div>Health: <span id="health">checking…</span></div>
+      <pre id="health-raw"></pre>
+    </div>
+    <div class="card">
+      <h3>Trust boundary (PRD §9)</h3>
+      <p>AI proposes → deterministic code validates → user confirms → wallet signs → Solana verifies.</p>
+    </div>
+    <script define:vars={{ apiUrl }}>
+      fetch(`${apiUrl}/api/health`)
+        .then((r) => r.json())
+        .then((j) => {
+          document.getElementById("health").textContent = j.ok ? `ok (${j.network})` : "not ok";
+          document.getElementById("health-raw").textContent = JSON.stringify(j, null, 2);
+        })
+        .catch((e) => {
+          document.getElementById("health").textContent = "backend not reachable — start pnpm dev:api";
+          document.getElementById("health-raw").textContent = String(e);
+        });
+    </script>
+  </body>
+</html>

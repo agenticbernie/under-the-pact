@@ -1,0 +1,16 @@
+# Deps & build
+node_modules/
+dist/
+.astro/
+.output/
+*.tsbuildinfo
+
+# Env — never commit real secrets (REQ-S-008)
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# OS / editor
+.DS_Store
+*.log
