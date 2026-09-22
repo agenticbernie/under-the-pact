@@ -104,12 +104,24 @@ untrusted until it passes. Rejections map to stable `PolicyErrorCode`.
 - Web: Cloudflare Pages, root `apps/web`, build `pnpm --filter @pact/web build`,
   env `PUBLIC_API_URL=<neon function URL>`, allow origin in Hono CORS.
 
+## Intent parser (BER-132, REQ-F-002/003/004)
+
+`POST /api/intent/parse`: shape validation (400) → real LLM extraction
+(JSON mode, temperature 0) → deterministic mapping → canonical PARSED
+intent (200), recoverable clarification (422 AMBIGUOUS_REQUEST + missing
+fields), or ParserError (500 PARSER_ERROR — always distinguishable from
+policy rejections in BER-134/135).
+
+Trust rules: the model proposes raw fields only; chain data (network,
+mint, recipient) comes from trusted config, never the model; the key
+stays server-side via `LLM_*` env; `LlmClient` is the single seam, so
+tests stub it and CI needs no key. Set `LLM_API_KEY` (+ optional
+`LLM_BASE_URL`/`LLM_MODEL`/`INTENT_TTL_SECONDS`) for live parsing.
+
 ## What lands next
 
-- BER-130 input UI ✅ (this branch): NL textarea + client fast-fail +
-  server `PaymentRequest` validation (400 INVALID_REQUEST); valid text
-  reaches the parser layer (501 PARSER_ERROR until BER-132).
-- BER-131 full intent schema ✅ (this branch): canonical `PaymentIntent` +
-  fixtures + pure helpers, consumed by API tests; parser/validator/UI wire up in BER-132+.
-- BER-132 parser stub→real,
-  BER-133 merchant registry, BER-138 wallet adapter (Sprint 2).
+- BER-130 input UI ✅: NL textarea + client fast-fail + server validation.
+- BER-131 intent schema ✅: canonical `PaymentIntent` + fixtures + helpers.
+- BER-132 parser ✅ (this branch): real LLM extraction + deterministic mapping.
+- BER-133 merchant registry, BER-134/135 policy engine,
+  BER-138 wallet adapter (Sprint 2).
