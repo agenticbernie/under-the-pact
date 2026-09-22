@@ -29,7 +29,15 @@ export default defineConfig({
           // `neon deploy --env .env.production` so this resolves from file.
           // Empty string keeps the type defined; boot fails with a clear error.
           MERCHANT_WALLET: process.env["MERCHANT_WALLET"] ?? "",
-          SPENDING_LIMIT_USDC: process.env["SPENDING_LIMIT_USDC"] ?? "50"
+          SPENDING_LIMIT_USDC: process.env["SPENDING_LIMIT_USDC"] ?? "50",
+          // Intent parser LLM (BER-132). Values resolve from the deploy-time
+          // shell (or `neon deploy --env .env.production`). The real key
+          // lives only in your shell/file — never in git.
+          LLM_BASE_URL:
+            process.env["LLM_BASE_URL"] ?? "https://api.openai.com/v1",
+          LLM_MODEL: process.env["LLM_MODEL"] ?? "gpt-4o-mini",
+          LLM_API_KEY: process.env["LLM_API_KEY"] ?? "",
+          INTENT_TTL_SECONDS: process.env["INTENT_TTL_SECONDS"] ?? "900"
         },
         dev: { port: 8787 }
       }
