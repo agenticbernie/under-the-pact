@@ -30,6 +30,20 @@ export const SolanaAddress = Schema.String.pipe(
 ).pipe(Schema.annotations({ identifier: "SolanaAddress" }))
 export type SolanaAddress = typeof SolanaAddress.Type
 
+/**
+ * ISO-8601 UTC instant string (expiry, createdAt, updatedAt).
+ * Format gate only — "is it already expired?" is policy (BER-135).
+ */
+export const IsoDateTime = Schema.String.pipe(
+  Schema.filter(
+    (s) =>
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/.test(s) &&
+      !Number.isNaN(Date.parse(s)),
+    { message: () => "expected an ISO-8601 UTC instant" }
+  )
+).pipe(Schema.annotations({ identifier: "IsoDateTime" }))
+export type IsoDateTime = typeof IsoDateTime.Type
+
 export const PaymentStatus = Schema.Literal(
   "DRAFT",
   "PARSED",
@@ -49,12 +63,71 @@ export const PaymentStatus = Schema.Literal(
 export type PaymentStatus = typeof PaymentStatus.Type
 
 export const PaymentIntent = Schema.Struct({
-  intentId: Schema.String,
+  // Unique id, format intent_<32 hex>. Created by createIntentId().
+  intentId: Schema.String.pipe(
+    Schema.pattern(/^intent_[A-Za-z0-9]{8,64}$/, {
+      message: () => "intentId must look like intent_<id>"
+    })
+  ),
+  // Lifecycle status (SRS §16.6). Transitions are enforced by the
+  // Confirmation Controller (BER-137), never by this schema alone.
   status: PaymentStatus,
-  // Remaining fields (merchantId, amount, tokenMint, network, recipient,
-  // purpose, expiry, timestamps) are defined in BER-131.
+  // Pre-registered merchant id. Must exist in the MerchantConfig (BER-133);
+  // unknown ids are rejected by the policy engine (BER-134), not here.
+  merchantId: Schema.NonEmptyString,
+  // Amount in USDC minor units (micro-USDC, 1 USDC = 1_000_000).
+  // Integer-only: no floats anywhere near money. Upper bound is a sanity
+  // cap; the merchant spending limit is enforced by policy (BER-135).
+  amountMicroUsdc: Schema.Int.pipe(
+    Schema.positive({ message: () => "amount must be positive" }),
+    Schema.lessThanOrEqualTo(1_000_000_000_000, {
+      message: () => "amount exceeds the schema sanity cap (1M USDC)"
+    })
+  ),
+  // PoC supports exactly one token.
+  token: Schema.Literal("USDC"),
+  // Must equal the configured USDC mint (BER-134).
+  tokenMint: SolanaAddress,
+  network: SolanaNetwork,
+  // Resolved recipient wallet. Must equal the registered merchant wallet —
+  // arbitrary addresses are rejected by policy (BER-135), not here.
+  recipient: SolanaAddress,
+  // Raw recipient mention from the user text (e.g. "Pact Coffee").
+  // Audit context only; never used for execution.
+  recipientReference: Schema.optional(Schema.String.pipe(Schema.maxLength(120))),
+  // User-declared purpose/memo. Optional: a payer may state no purpose.
+  purpose: Schema.optional(Schema.String.pipe(Schema.maxLength(280))),
+  // The user's wallet. Unknown until wallet connection (Sprint 2, BER-138),
+  // so intents are created without it.
+  userWallet: Schema.optional(SolanaAddress),
+  // ISO-8601 UTC instants. Expiry enforcement is policy (BER-135):
+  // the parser (BER-132) sets expiry = now + TTL, validators reject past ones.
+  expiry: IsoDateTime,
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime
 }).pipe(Schema.annotations({ identifier: "PaymentIntent" }))
 export type PaymentIntent = typeof PaymentIntent.Type
+
+/** 1 USDC = 1_000_000 minor units (SPL has 6 decimals). */
+export const MICRO_USDC_PER_USDC = 1_000_000
+
+/** intent_<32 hex>, e.g. intent_9f3c… — collision-safe for the PoC. */
+export const createIntentId = (): string =>
+  `intent_${crypto.randomUUID().replace(/-/g, "")}`
+
+/** Render integer micro-USDC without floats: 5500000 -> "5.5". */
+export const formatMicroUsdc = (microUsdc: number): string => {
+  const whole = Math.trunc(microUsdc / MICRO_USDC_PER_USDC)
+  const frac = Math.abs(microUsdc % MICRO_USDC_PER_USDC)
+    .toString()
+    .padStart(6, "0")
+    .replace(/0+$/, "")
+  return frac.length === 0 ? String(whole) : `${whole}.${frac}`
+}
+
+/** Pure expiry check shared by policy (BER-135) and UI countdowns. */
+export const isExpired = (intent: PaymentIntent, now: Date = new Date()): boolean =>
+  Date.parse(intent.expiry) <= now.getTime()
 
 export const MerchantConfig = Schema.Struct({
   merchantId: Schema.String,

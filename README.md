@@ -67,6 +67,31 @@ replace it with the real devnet recipient before the demo (BER-133 locks it).
 
 Never commit any `.env*` file (only `.env.example` is tracked) or private keys (REQ-S-008).
 
+## PaymentIntent contract (BER-131, SRS §16.5)
+
+Canonical schema: `packages/shared/src/schema.ts` (`PaymentIntent`).
+Fixtures: `packages/shared/src/fixtures.ts`.
+
+| Field | Required | Notes |
+|---|---|---|
+| intentId | yes | `intent_<id>`, via `createIntentId()` |
+| status | yes | lifecycle enum; transitions enforced by BER-137 |
+| merchantId | yes | must be registered (BER-134 rejects unknown) |
+| amountMicroUsdc | yes | integer micro-USDC, no floats; policy enforces limit (BER-135) |
+| token | yes | always `USDC` |
+| tokenMint | yes | must equal configured mint (BER-134) |
+| network | yes | devnet / testnet / mainnet-beta |
+| recipient | yes | must equal merchant wallet (BER-135 rejects arbitrary) |
+| recipientReference | no | raw mention from user text, audit only |
+| purpose | no | user memo, max 280 chars |
+| userWallet | no | unknown until wallet connects (Sprint 2) |
+| expiry / createdAt / updatedAt | yes | ISO-8601 UTC; expiry enforced by policy (BER-135) |
+
+Pure helpers: `createIntentId`, `formatMicroUsdc`, `isExpired` — no UI/LLM
+imports. Every consumer (parser BER-132, policy BER-134/135, UI BER-136,
+execution Sprint 2) decodes through this schema; AI/client output is
+untrusted until it passes. Rejections map to stable `PolicyErrorCode`.
+
 ## Deploy sketch
 
 - API: `pnpm deploy:api` (builds `@pact/shared`, then `neon deploy` —
@@ -84,5 +109,7 @@ Never commit any `.env*` file (only `.env.example` is tracked) or private keys (
 - BER-130 input UI ✅ (this branch): NL textarea + client fast-fail +
   server `PaymentRequest` validation (400 INVALID_REQUEST); valid text
   reaches the parser layer (501 PARSER_ERROR until BER-132).
-- BER-131 full intent schema, BER-132 parser stub→real,
+- BER-131 full intent schema ✅ (this branch): canonical `PaymentIntent` +
+  fixtures + pure helpers, consumed by API tests; parser/validator/UI wire up in BER-132+.
+- BER-132 parser stub→real,
   BER-133 merchant registry, BER-138 wallet adapter (Sprint 2).
