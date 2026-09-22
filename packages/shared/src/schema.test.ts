@@ -7,6 +7,7 @@ import {
   PaymentIntent,
   PaymentRequest
 } from "./schema.js"
+import { minimalValidIntentFixture } from "./fixtures.js"
 
 // System program address: valid base58, decodes to 32 bytes. Test-only dummy.
 const DUMMY_WALLET = "11111111111111111111111111111111"
@@ -14,11 +15,10 @@ const DEVNET_USDC_MINT = "4zMMC9sEqf9MKyRbf3Tx3sQAr1BLWnCQcHjEXtGbm4o"
 
 describe("shared schema skeleton (BER-129)", () => {
   it("decodes a minimal intent skeleton", () => {
-    const decoded = Schema.decodeUnknownSync(PaymentIntent)({
-      intentId: "intent_test_001",
-      status: "DRAFT"
-    })
-    expect(decoded.intentId).toBe("intent_test_001")
+    const decoded = Schema.decodeUnknownSync(PaymentIntent)(
+      minimalValidIntentFixture()
+    )
+    expect(decoded.status).toBe("DRAFT")
   })
 
   it("decodes merchant config from env-shaped input", () => {
