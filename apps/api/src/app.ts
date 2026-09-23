@@ -39,6 +39,20 @@ export const createApp = (opts: AppOptions = {}) => {
     })
   )
 
+  // Fail-explicit: config/load defects (bad env, invalid network/wallet)
+  // answer in-contract JSON instead of an empty 500.
+  app.onError((err, c) => {
+    console.error("[pact-api] unhandled:", err)
+    return c.json(
+      {
+        ok: false,
+        code: PolicyErrorCode.INTERNAL_ERROR,
+        message: "Internal error."
+      },
+      500
+    )
+  })
+
   app.get("/api/health", async (c) => {
     const program = Effect.gen(function*() {
       const cfg = yield* PactConfigService
@@ -110,9 +124,23 @@ export const createApp = (opts: AppOptions = {}) => {
       )
       const tempParsed = tempRaw.trim().length === 0 ? NaN : Number(tempRaw)
       const temperature = Number.isFinite(tempParsed) ? tempParsed : undefined
-      const ttlSeconds = yield* Config.number("INTENT_TTL_SECONDS").pipe(
-        Config.withDefault(900)
+      const ttlRaw = yield* Config.string("INTENT_TTL_SECONDS").pipe(
+        Config.withDefault("900")
       )
+      const ttlSeconds = Number(ttlRaw)
+      // TTL is date arithmetic input: zero/negative mints already-expired
+      // intents, huge values throw RangeError defects. Fail in-contract
+      // (returned as data — this runs inside Effect.gen).
+      if (!Number.isFinite(ttlSeconds) || ttlSeconds <= 0 || ttlSeconds > 86400) {
+        return {
+          status: 500,
+          body: {
+            ok: false,
+            code: PolicyErrorCode.PARSER_ERROR,
+            message: "INTENT_TTL_SECONDS must be between 1 and 86400."
+          }
+        } as const
+      }
       const ctx: ParserContext = {
         network: cfg.solanaNetwork,
         tokenMint: cfg.usdcMint,

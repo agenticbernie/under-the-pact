@@ -68,6 +68,52 @@ const normalize = (s: string): string =>
   s.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim()
 
 /**
+ * Exact merchant matching (Codex P1): every significant word of the
+ * reference must appear in the alias vocabulary. Substring matching alone
+ * lets "Blue Bottle Coffee" resolve via "coffee", and single characters
+ * match hyphenated ids — both would stamp the trusted wallet on the
+ * wrong payee, undetectable by later policy.
+ */
+const aliasWords = (aliases: string[]): Set<string> =>
+  new Set(
+    aliases.flatMap((a) =>
+      a.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 2)
+    )
+  )
+
+const matchesMerchant = (refNorm: string, ctx: ParserContext): boolean => {
+  if (refNorm.length === 0) {
+    return false
+  }
+  if (ctx.merchantAliases.includes(refNorm)) {
+    return true
+  }
+  const words = refNorm.split(/[^a-z0-9]+/).filter((w) => w.length >= 2)
+  if (words.length === 0) {
+    return false
+  }
+  const vocab = aliasWords(ctx.merchantAliases)
+  return words.every((w) => vocab.has(w))
+}
+
+/**
+ * Grounding (Codex P1): payment-critical model values must be evidenced
+ * in the source request. A hallucinated amount/token for "Pay Pact Coffee"
+ * must never become a valid intent — later policy cannot tell invented
+ * values from user-stated ones.
+ */
+const textAmountMicros = (text: string): Set<number> => {
+  const out = new Set<number>()
+  for (const m of text.replace(/,/g, "").match(/(\d+(?:\.\d{1,6})?)/g) ?? []) {
+    const micro = decimalUsdcToMicro(m)
+    if (micro !== null) {
+      out.add(micro)
+    }
+  }
+  return out
+}
+
+/**
  * Alias set the parser matches merchant mentions against.
  * Context for interpretation only — acceptance is policy's job (BER-134).
  */
@@ -134,23 +180,24 @@ export const toIntentProposal = (
   }
   const ext = decoded.right
 
-  // Merchant: must resolve to the one supported merchant.
+  // Merchant: must resolve to the one supported merchant (exact match).
   const ref = ext.merchantReference?.trim() ?? ""
   const refNorm = normalize(ref)
-  const matched =
-    refNorm.length > 0 &&
-    ctx.merchantAliases.some(
-      (a) => refNorm.includes(a) || (a.length > 3 && a.includes(refNorm))
-    )
-  if (!matched) {
+  if (!matchesMerchant(refNorm, ctx)) {
     return clarify(
       `Which merchant? This demo pays "${ctx.merchantDisplayName}" only — try "Pay 5 USDC to ${ctx.merchantDisplayName}".`,
       ["merchant"]
     )
   }
 
-  // Token: USDC-only PoC.
+  // Token: must be evidenced in the text, then USDC-only PoC.
   const token = ext.tokenMention?.trim() ?? ""
+  if (token.length > 0 && !text.toLowerCase().includes(token.toLowerCase())) {
+    return {
+      _tag: "ModelError",
+      message: "Model token mention not found in request text."
+    }
+  }
   if (token.length > 0 && !/^(usdc|usd\s*coin|\$)$/i.test(token)) {
     return clarify(
       `This demo supports USDC only (you wrote "${token}"). Try "Pay 5 USDC to ${ctx.merchantDisplayName}".`,
@@ -172,8 +219,23 @@ export const toIntentProposal = (
       message: `Model returned an unusable amount: ${ext.amountUsdc.slice(0, 40)}.`
     }
   }
+  // Amount grounding: the digits must come from the user's text.
+  // No digits at all -> the user stated no amount (clarify, don't invent).
+  // Digits present but none matching -> the model invented it (model error).
+  const mentioned = textAmountMicros(text)
+  if (mentioned.size === 0) {
+    return clarify('How much? Include an amount, e.g. "Pay 5 USDC".', [
+      "amount"
+    ])
+  }
+  if (!mentioned.has(micro)) {
+    return {
+      _tag: "ModelError",
+      message: "Model amount not found in request text."
+    }
+  }
   if (micro <= 0) {
-    return clarify("Amount must be greater than zero, e.g. \"Pay 5 USDC\".", [
+    return clarify('Amount must be greater than zero, e.g. "Pay 5 USDC".', [
       "amount"
     ])
   }
@@ -188,7 +250,9 @@ export const toIntentProposal = (
     tokenMint: ctx.tokenMint,
     network: ctx.network,
     recipient: ctx.recipientWallet,
-    recipientReference: ref,
+    // Audit context only (never execution): cap like purpose so a verbose
+    // model phrase cannot fail schema decode for otherwise usable input.
+    recipientReference: ref.slice(0, 120),
     purpose: ext.purpose?.trim() ? ext.purpose.trim().slice(0, 280) : undefined,
     expiry: new Date(now.getTime() + ctx.ttlSeconds * 1000).toISOString(),
     createdAt: at,
@@ -198,7 +262,6 @@ export const toIntentProposal = (
   if (intent._tag === "Left") {
     return { _tag: "ModelError", message: "Proposal failed schema validation." }
   }
-  void text
   return { _tag: "Parsed", intent: intent.right }
 }
 

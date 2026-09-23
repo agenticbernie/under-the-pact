@@ -24,6 +24,24 @@ describe("LlmClient", () => {
     expect(fetchSpy).not.toHaveBeenCalled()
   })
 
+  it("maps a null JSON body to LlmError, never a TypeError (Codex P2)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("null", { status: 200 }))
+    )
+    const exit = await Effect.runPromiseExit(
+      Effect.gen(function* () {
+        const client = yield* LlmClient
+        return yield* client.completeJson(
+          { baseUrl: "https://example.test", apiKey: "k", model: "m" },
+          "system",
+          "user"
+        )
+      }).pipe(Effect.provide(LlmLive))
+    )
+    expect(exit._tag).toBe("Failure")
+  })
+
   it("omits temperature when undefined (reasoning-model compatible)", async () => {
     let sentBody = ""
     vi.stubGlobal(

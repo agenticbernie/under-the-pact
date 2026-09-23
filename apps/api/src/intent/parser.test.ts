@@ -67,7 +67,12 @@ describe("toIntentProposal (pure, no LLM)", () => {
   })
 
   it("asks for the amount when missing", () => {
-    const result = toIntentProposal(extraction({ amountUsdc: null }), "Pay Pact Coffee", ctx, now)
+    const result = toIntentProposal(
+      extraction({ amountUsdc: null, tokenMention: null }),
+      "Pay Pact Coffee",
+      ctx,
+      now
+    )
     expect(result._tag).toBe("Clarification")
     if (result._tag === "Clarification") {
       expect(result.missing).toContain("amount")
@@ -92,6 +97,92 @@ describe("toIntentProposal (pure, no LLM)", () => {
     expect(result._tag).toBe("Clarification")
     if (result._tag === "Clarification") {
       expect(result.missing).toContain("merchant")
+    }
+  })
+
+  it("rejects substring-only merchant matches (Codex P1)", () => {
+    // "Blue Bottle Coffee" contains "coffee" but names another merchant.
+    const other = toIntentProposal(
+      extraction({ merchantReference: "Blue Bottle Coffee" }),
+      "Pay 5 USDC to Blue Bottle Coffee",
+      ctx,
+      now
+    )
+    expect(other._tag).toBe("Clarification")
+    // A one-character reference cannot identify the merchant either.
+    const tiny = toIntentProposal(
+      extraction({ merchantReference: "a" }),
+      "Pay 5 USDC to a",
+      ctx,
+      now
+    )
+    expect(tiny._tag).toBe("Clarification")
+  })
+
+  it("clarifies instead of inventing an amount (grounding, Codex P1)", () => {
+    // Text states no digits at all: user said no amount.
+    const result = toIntentProposal(
+      extraction({
+        merchantReference: "Pact Coffee",
+        amountUsdc: "500",
+        tokenMention: null
+      }),
+      "Pay Pact Coffee please",
+      ctx,
+      now
+    )
+    expect(result._tag).toBe("Clarification")
+    if (result._tag === "Clarification") {
+      expect(result.missing).toContain("amount")
+    }
+  })
+
+  it("flags digits that do not match the text as model error", () => {
+    const result = toIntentProposal(
+      extraction({ merchantReference: "Pact Coffee", amountUsdc: "500" }),
+      "Pay 5 USDC to Pact Coffee",
+      ctx,
+      now
+    )
+    expect(result._tag).toBe("ModelError")
+  })
+
+  it("flags invented token mentions as model error", () => {
+    const result = toIntentProposal(
+      extraction({ merchantReference: "Pact Coffee", tokenMention: "EUR" }),
+      "Pay 5 USDC to Pact Coffee",
+      ctx,
+      now
+    )
+    expect(result._tag).toBe("ModelError")
+  })
+
+  it("clarifies verbose references with unrecognized words", () => {
+    const longRef = `Pact Coffee ${"very ".repeat(40)}downtown branch`
+    const result = toIntentProposal(
+      extraction({ merchantReference: longRef }),
+      `Pay 5 USDC to ${longRef}`,
+      ctx,
+      now
+    )
+    // Extra words break exact matching: safe clarification, never a guess.
+    expect(result._tag).toBe("Clarification")
+  })
+
+  it("caps long but exactly-matching references instead of failing schema", () => {
+    const longRef = "Pact Coffee ".repeat(15).trim()
+    expect(longRef.length).toBeGreaterThan(120)
+    const result = toIntentProposal(
+      extraction({ merchantReference: longRef }),
+      `Pay 5 USDC to ${longRef}`,
+      ctx,
+      now
+    )
+    expect(result._tag).toBe("Parsed")
+    if (result._tag === "Parsed") {
+      expect(
+        (result.intent.recipientReference ?? "").length
+      ).toBeLessThanOrEqual(120)
     }
   })
 

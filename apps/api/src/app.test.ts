@@ -121,6 +121,23 @@ describe("api skeleton (BER-129)", () => {
     const body = (await res.json()) as { ok: boolean; code: string }
     expect(body.code).toBe("PARSER_ERROR")
   })
+
+  it("POST /api/intent/parse rejects bad INTENT_TTL_SECONDS in-contract (Codex P2)", async () => {
+    for (const ttl of ["0", "-5", "not-a-number", "99999999"]) {
+      process.env["INTENT_TTL_SECONDS"] = ttl
+      const app = createApp({ llmLayer: stubLlm(goodExtraction) })
+      const res = await app.request("/api/intent/parse", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: "Pay 5 USDC to Pact Coffee" })
+      })
+      expect(res.status).toBe(500)
+      const body = (await res.json()) as { ok: boolean; code: string }
+      expect(body.ok).toBe(false)
+      expect(body.code).toBe("PARSER_ERROR")
+    }
+    delete process.env["INTENT_TTL_SECONDS"]
+  })
 })
 
 describe("config network defaults (Codex P1)", () => {

@@ -91,15 +91,25 @@ export class LlmClient extends Effect.Service<LlmClient>()("LlmClient", {
               status: res.status
             })
           }
-          const json = (yield* Effect.tryPromise({
+          const body: unknown = yield* Effect.tryPromise({
             try: () => res.json(),
             catch: () =>
               new LlmError({
                 reason: "bad_json",
                 message: "LLM API response was not JSON."
               })
-          })) as { choices?: Array<{ message?: { content?: string | null } }> }
-          const content = json.choices?.[0]?.message?.content
+          })
+          // Guard before dereferencing: a 200 with `null` (or a non-object)
+          // must become a typed LlmError, never a TypeError defect that
+          // bypasses the structured PARSER_ERROR path.
+          if (typeof body !== "object" || body === null) {
+            return yield* new LlmError({
+              reason: "bad_json",
+              message: "LLM API response was not an object."
+            })
+          }
+          const content = (body as { choices?: Array<{ message?: { content?: string | null } }> }).choices?.[0]
+            ?.message?.content
           if (typeof content !== "string" || content.length === 0) {
             return yield* new LlmError({
               reason: "bad_json",
