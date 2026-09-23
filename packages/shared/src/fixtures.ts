@@ -69,6 +69,12 @@ export const invalidIntentFixtures = (): InvalidIntentFixture[] => {
     bad("bad-network", "network enum", { network: "ethereum" }),
     bad("bad-recipient", "recipient pubkey", { recipient: "attacker" }),
     bad("bad-expiry", "expiry ISO instant", { expiry: "tomorrow" }),
+    bad("impossible-expiry", "real calendar date (2030 not a leap year)", {
+      expiry: "2030-02-29T00:00:00.000Z"
+    }),
+    bad("impossible-created-at", "real calendar date", {
+      createdAt: "2023-02-30T00:00:00Z"
+    }),
     bad("bad-created-at", "createdAt ISO instant", {
       createdAt: "01/01/2030"
     }),

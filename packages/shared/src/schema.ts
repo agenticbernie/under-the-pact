@@ -33,14 +33,37 @@ export type SolanaAddress = typeof SolanaAddress.Type
 /**
  * ISO-8601 UTC instant string (expiry, createdAt, updatedAt).
  * Format gate only — "is it already expired?" is policy (BER-135).
+ * Strict calendar check (Codex P2): Date.parse normalizes impossible
+ * dates (2023-02-29 -> Mar 1), so components are compared back —
+ * a normalized instant must never silently extend validity.
  */
-export const IsoDateTime = Schema.String.pipe(
-  Schema.filter(
-    (s) =>
-      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/.test(s) &&
-      !Number.isNaN(Date.parse(s)),
-    { message: () => "expected an ISO-8601 UTC instant" }
+const ISO_COMPONENTS =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?Z$/
+
+const isRealCalendarInstant = (s: string): boolean => {
+  const m = ISO_COMPONENTS.exec(s)
+  if (!m) {
+    return false
+  }
+  const ms = m[7] ? Number(m[7].padEnd(3, "0")) : 0
+  const d = new Date(
+    Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6], ms)
   )
+  return (
+    d.getUTCFullYear() === +m[1] &&
+    d.getUTCMonth() === +m[2] - 1 &&
+    d.getUTCDate() === +m[3] &&
+    d.getUTCHours() === +m[4] &&
+    d.getUTCMinutes() === +m[5] &&
+    d.getUTCSeconds() === +m[6] &&
+    d.getUTCMilliseconds() === ms
+  )
+}
+
+export const IsoDateTime = Schema.String.pipe(
+  Schema.filter(isRealCalendarInstant, {
+    message: () => "expected a real ISO-8601 UTC calendar instant"
+  })
 ).pipe(Schema.annotations({ identifier: "IsoDateTime" }))
 export type IsoDateTime = typeof IsoDateTime.Type
 

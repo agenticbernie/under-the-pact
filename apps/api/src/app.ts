@@ -89,7 +89,10 @@ export const createApp = (opts: AppOptions = {}) => {
         400
       )
     }
-    const raw = body as { text?: unknown }
+    const raw =
+      typeof body === "object" && body !== null
+        ? (body as { text?: unknown })
+        : {}
     const candidate = {
       text:
         typeof raw.text === "string" ? normalizeRequestText(raw.text) : raw.text

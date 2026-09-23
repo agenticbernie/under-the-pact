@@ -64,6 +64,19 @@ describe("api skeleton (BER-129)", () => {
     expect(missing.status).toBe(400)
   })
 
+  it("POST /api/intent/parse rejects JSON null with 400, not 500 (Codex P2)", async () => {
+    const app = createApp()
+    const res = await app.request("/api/intent/parse", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "null"
+    })
+    expect(res.status).toBe(400)
+    const body = (await res.json()) as { ok: boolean; code: string }
+    expect(body.ok).toBe(false)
+    expect(body.code).toBe("INVALID_REQUEST")
+  })
+
   it("POST /api/intent/parse returns a PARSED intent for good model output", async () => {
     const app = createApp({ llmLayer: stubLlm(goodExtraction) })
     const res = await app.request("/api/intent/parse", {
