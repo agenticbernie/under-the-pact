@@ -116,7 +116,19 @@ Trust rules: the model proposes raw fields only; chain data (network,
 mint, recipient) comes from trusted config, never the model; the key
 stays server-side via `LLM_*` env; `LlmClient` is the single seam, so
 tests stub it and CI needs no key. Set `LLM_API_KEY` (+ optional
-`LLM_BASE_URL`/`LLM_MODEL`/`INTENT_TTL_SECONDS`) for live parsing.
+`LLM_BASE_URL`/`LLM_MODEL`/`LLM_TEMPERATURE`/`INTENT_TTL_SECONDS`) for live parsing.
+
+Model notes (verified live 2026-09-22):
+- OpenAI `gpt-5.6-luna`: rejects explicit `temperature` — leave
+  `LLM_TEMPERATURE` blank (omit = default 1).
+- OpenRouter free picks with `temperature: 0` + JSON mode working:
+  `nvidia/nemotron-3-super-120b-a12b:free` (most capable, 3/3 stable
+  parses), `nex-agi/nex-n2.5-pro:free`, `dots-studio/dots-3-note-preview:free`.
+  Google Gemma `:free` variants were upstream-429 at test time.
+  Avoid `nemotron-3.5-content-safety:free`: safety classifier, no
+  `response_format` support — wrong tool for extraction.
+- Free tier = rate-limited upstream, no capacity guarantee: fine for
+  dev/demo, not production.
 
 ## What lands next
 
