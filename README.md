@@ -130,10 +130,25 @@ Model notes (verified live 2026-09-22):
 - Free tier = rate-limited upstream, no capacity guarantee: fine for
   dev/demo, not production.
 
+## Policy engine (BER-134 + BER-135, C-005)
+
+Pure `validateIntent(intent, merchant, now)` in `apps/api/src/policy/`:
+no UI, LLM, network, or wallet. Fixed check order (first failure wins):
+UNKNOWN_MERCHANT → WRONG_NETWORK → WRONG_MINT → NOT_VALIDATED (PARSED
+only) → EXPIRED → INVALID_AMOUNT → RECIPIENT_MISMATCH → OVER_LIMIT →
+VALIDATED. Amounts and limits compare as integer micro-USDC through the
+shared `decimalUsdcToMicro` choke point — never floats. Success returns
+the same values with status VALIDATED; Sprint 2 builds transactions from
+exactly these. Served at `POST /api/intent/validate` (malformed bodies
+are 400 INVALID_REQUEST before the engine runs).
+
 ## What lands next
 
 - BER-130 input UI ✅: NL textarea + client fast-fail + server validation.
 - BER-131 intent schema ✅: canonical `PaymentIntent` + fixtures + helpers.
-- BER-132 parser ✅ (this branch): real LLM extraction + deterministic mapping.
-- BER-133 merchant registry, BER-134/135 policy engine,
+- BER-132 parser ✅ (this stack): real LLM extraction + deterministic mapping.
+- BER-133 merchant registry ✅ (main): single-merchant module + kill-switch.
+- BER-134/135 policy engine ✅ (this branch): deterministic validation +
+  stable codes + validate endpoint.
+- BER-136 summary view, BER-137 confirmation,
   BER-138 wallet adapter (Sprint 2).

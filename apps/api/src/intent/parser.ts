@@ -1,7 +1,7 @@
 import { Data, Effect, Schema } from "effect"
 import {
   createIntentId,
-  MICRO_USDC_PER_USDC,
+  decimalUsdcToMicro,
   PaymentIntent,
   PolicyErrorCode,
   type SolanaNetwork
@@ -128,19 +128,8 @@ export const merchantAliasesFor = (
   return [...new Set([merchantId.toLowerCase(), displayName.toLowerCase(), ...words])]
 }
 
-/** Exact decimal USDC string -> integer micro-USDC. Null only when malformed. */
-export const decimalUsdcToMicro = (raw: string): number | null => {
-  const s = raw.trim()
-  const m = /^(\d+)(?:\.(\d{1,6}))?$/.exec(s)
-  if (!m) {
-    return null
-  }
-  const micro = Number(m[1]) * MICRO_USDC_PER_USDC + Number((m[2] ?? "").padEnd(6, "0") || "0")
-  if (!Number.isSafeInteger(micro)) {
-    return null
-  }
-  return micro
-}
+/** decimalUsdcToMicro lives in @pact/shared (single money-math choke point). */
+export { decimalUsdcToMicro } from "@pact/shared"
 
 const SYSTEM_PROMPT = `You extract payment details from a user's request. You only extract data — you never authorize, approve, or execute payments.
 

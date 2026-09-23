@@ -3,6 +3,7 @@ import { cors } from "hono/cors"
 import { Config, Effect, Layer, Schema } from "effect"
 import {
   normalizeRequestText,
+  PaymentIntent,
   PaymentRequest,
   PolicyErrorCode
 } from "@pact/shared"
@@ -13,6 +14,7 @@ import {
   parsePaymentIntent,
   type ParserContext
 } from "./intent/parser.js"
+import { validateIntent } from "./policy/engine.js"
 
 /**
  * Hono skeleton (BER-129).
@@ -198,6 +200,73 @@ export const createApp = (opts: AppOptions = {}) => {
       return c.json(out.body, 422)
     }
     return c.json(out.body, 500)
+  })
+
+  // BER-134 + BER-135: deterministic validation as a service.
+  // Input is decoded through the canonical schema first — frontend and AI
+  // output cannot bypass policy. Success returns the same values with
+  // status VALIDATED (Sprint 2 builds transactions from exactly these).
+  app.post("/api/intent/validate", async (c) => {
+    let body: unknown
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json(
+        {
+          ok: false,
+          code: PolicyErrorCode.INVALID_REQUEST,
+          message: "Request body must be JSON with an 'intent' field."
+        },
+        400
+      )
+    }
+    const raw =
+      typeof body === "object" && body !== null
+        ? (body as { intent?: unknown })
+        : {}
+    const shaped = Schema.decodeUnknownEither(PaymentIntent)(raw.intent)
+    if (shaped._tag === "Left") {
+      return c.json(
+        {
+          ok: false,
+          code: PolicyErrorCode.INVALID_REQUEST,
+          message: "Body 'intent' must be a canonical PaymentIntent."
+        },
+        400
+      )
+    }
+    const program = Effect.gen(function* () {
+      const cfg = yield* PactConfigService
+      const result = yield* validateIntent(shaped.right, {
+        merchant: cfg.merchant
+      }).pipe(
+        Effect.map((intent) => ({ _tag: "Validated", intent }) as const),
+        Effect.catchAll((error) =>
+          Effect.succeed({ _tag: "Rejected", error } as const)
+        )
+      )
+      if (result._tag === "Validated") {
+        return {
+          status: 200,
+          body: { ok: true, intent: result.intent }
+        } as const
+      }
+      return {
+        status: 422,
+        body: {
+          ok: false,
+          code: result.error.code,
+          message: result.error.message
+        }
+      } as const
+    })
+    const out = await Effect.runPromise(
+      program.pipe(Effect.provide(PactConfigLive))
+    )
+    if (out.status === 200) {
+      return c.json(out.body, 200)
+    }
+    return c.json(out.body, 422)
   })
 
   app.get("/", (c) =>
