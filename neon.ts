@@ -30,6 +30,7 @@ export default defineConfig({
           // Empty string keeps the type defined; boot fails with a clear error.
           MERCHANT_WALLET: process.env["MERCHANT_WALLET"] ?? "",
           SPENDING_LIMIT_USDC: process.env["SPENDING_LIMIT_USDC"] ?? "50",
+          MERCHANT_ACTIVE: process.env["MERCHANT_ACTIVE"] ?? "",
           // Intent parser LLM (BER-132). Values resolve from the deploy-time
           // shell (or `neon deploy --env .env.production`). The real key
           // lives only in your shell/file — never in git.

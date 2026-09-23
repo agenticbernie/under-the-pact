@@ -78,6 +78,14 @@ const configFromEnv = Effect.gen(function*() {
   const spendingLimitUsdc = yield* Config.number("SPENDING_LIMIT_USDC").pipe(
     Config.withDefault(50)
   )
+  // Kill-switch (BER-133): only an explicit truthy value activates the
+  // merchant — including when the variable is OMITTED entirely (Codex P1:
+  // an absent deployment setting must never silently enable payments).
+  // Policy (BER-134) rejects intents for inactive merchants.
+  const activeRaw = yield* Config.string("MERCHANT_ACTIVE").pipe(
+    Config.withDefault("")
+  )
+  const active = /^(true|1|yes)$/i.test(activeRaw.trim())
   const databaseUrl = yield* Config.string("DATABASE_URL").pipe(Config.option)
 
   const raw = {
@@ -91,7 +99,7 @@ const configFromEnv = Effect.gen(function*() {
       supportedTokenMint: usdcMint,
       network: solanaNetwork,
       spendingLimitUsdc,
-      active: true
+      active
     },
     databaseUrl: databaseUrl._tag === "Some" ? databaseUrl.value : undefined
   }

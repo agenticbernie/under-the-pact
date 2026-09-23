@@ -9,6 +9,10 @@ import {
 import { PactConfigLive, PactConfigService } from "./config.js"
 import { LlmClient, LlmLive } from "./intent/llm.js"
 import {
+  MerchantRegistry,
+  MerchantRegistryLive
+} from "./merchant/registry.js"
+import {
   merchantAliasesFor,
   parsePaymentIntent,
   type ParserContext
@@ -71,6 +75,34 @@ export const createApp = (opts: AppOptions = {}) => {
     return c.json(result)
   })
 
+  // BER-133: public merchant constants for the confirmation UI (BER-136).
+  // Recipient/mint are public devnet addresses (transparency), never secrets.
+  app.get("/api/merchant", async (c) => {
+    const program = Effect.gen(function* () {
+      const registry = yield* MerchantRegistry
+      const m = registry.getMerchant()
+      return {
+        ok: true,
+        merchant: {
+          merchantId: m.merchantId,
+          displayName: m.displayName,
+          recipientWallet: m.recipientWallet,
+          network: m.network,
+          token: "USDC",
+          tokenMint: m.supportedTokenMint,
+          spendingLimitUsdc: m.spendingLimitUsdc,
+          active: m.active
+        }
+      }
+    })
+    const result = await Effect.runPromise(
+      program.pipe(
+        Effect.provide(MerchantRegistryLive),
+        Effect.provide(PactConfigLive)
+      )
+    )
+    return c.json(result)
+  })
   // BER-132: validate shape (400) -> LLM parse -> 200 Parsed |
   // 422 Clarification (recoverable, REQ-F-003) | 500 ParserError.
   // Parser failures use PARSER_ERROR; policy rejections (BER-134/135) use
