@@ -15,6 +15,7 @@ export const PolicyErrorCode = {
   NOT_VALIDATED: "NOT_VALIDATED",
   INVALID_REQUEST: "INVALID_REQUEST",
   PARSER_ERROR: "PARSER_ERROR",
-  AMBIGUOUS_REQUEST: "AMBIGUOUS_REQUEST"
+  AMBIGUOUS_REQUEST: "AMBIGUOUS_REQUEST",
+  INTERNAL_ERROR: "INTERNAL_ERROR"
 } as const
 export type PolicyErrorCode = (typeof PolicyErrorCode)[keyof typeof PolicyErrorCode]

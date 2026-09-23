@@ -34,7 +34,7 @@ const apiUrl = import.meta.env.PUBLIC_API_URL ?? "http://localhost:8787";
           maxlength="2000"
           placeholder="e.g. Pay 5 USDC to Pact Coffee for oat latte"
         ></textarea>
-        <div class="hint"><span id="req-count">0</span>/2000 — intent parsing lands in BER-132.</div>
+        <div class="hint"><span id="req-count">0</span>/2000 — parsed by the AI agent, validated later.</div>
         <p><button type="submit" id="req-submit">Submit request</button></p>
       </form>
       <div id="req-error" role="alert"></div>
@@ -63,6 +63,11 @@ const apiUrl = import.meta.env.PUBLIC_API_URL ?? "http://localhost:8787";
       input.addEventListener("input", () => {
         count.textContent = String(input.value.length);
         error.textContent = "";
+        // Stale responses must never linger under edited text (Codex P2):
+        // any keystroke invalidates the previous round-trip display.
+        if (!input.disabled) {
+          status.textContent = "";
+        }
       });
 
       form.addEventListener("submit", async (e) => {
@@ -75,6 +80,11 @@ const apiUrl = import.meta.env.PUBLIC_API_URL ?? "http://localhost:8787";
           return;
         }
         submit.disabled = true;
+        // Lock the text during the round trip so a late response can never
+        // land under edited input (Codex P2). Tag it with the submitted
+        // value and only render if the text is unchanged.
+        input.disabled = true;
+        const sentText = checked.text;
         status.textContent = "Sending to intent parser…";
         try {
           const res = await fetch(`${apiUrl}/api/intent/parse`, {
@@ -82,9 +92,35 @@ const apiUrl = import.meta.env.PUBLIC_API_URL ?? "http://localhost:8787";
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ text: checked.text })
           });
-          const body = (await res.json()) as { ok: boolean; code: string; message: string };
-          if (res.status === 501 && body.code === "PARSER_ERROR") {
-            status.textContent = "Received by the backend — intent parsing lands in BER-132.";
+          const body = (await res.json()) as {
+            ok: boolean;
+            code?: string;
+            message?: string;
+            missing?: string[];
+            intent?: {
+              intentId: string;
+              status: string;
+              merchantId: string;
+              amountMicroUsdc: number;
+              expiry: string;
+            };
+          };
+          if (input.value.trim() !== sentText) {
+            // Text changed mid-flight (shouldn't happen while disabled,
+            // but never render a response for text the user didn't send).
+            status.textContent = "";
+          } else if (res.ok && body.intent) {
+            const usdc = body.intent.amountMicroUsdc / 1_000_000;
+            status.textContent =
+              `Parsed: ${usdc} USDC to ${body.intent.merchantId} ` +
+              `(intent ${body.intent.intentId.slice(0, 15)}…, ${body.intent.status}). ` +
+              `Policy validation lands in BER-134/135.`;
+          } else if (res.status === 422 && body.code === "AMBIGUOUS_REQUEST") {
+            error.textContent = body.message || "Need a bit more detail.";
+            if (body.missing?.length) {
+              error.textContent += ` (missing: ${body.missing.join(", ")})`;
+            }
+            status.textContent = "";
           } else if (!res.ok) {
             error.textContent = body.message || `Request rejected (${body.code || res.status}).`;
             status.textContent = "";
@@ -96,6 +132,7 @@ const apiUrl = import.meta.env.PUBLIC_API_URL ?? "http://localhost:8787";
           status.textContent = "";
         } finally {
           submit.disabled = false;
+          input.disabled = false;
         }
       });
     </script>
