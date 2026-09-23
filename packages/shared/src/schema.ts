@@ -134,6 +134,26 @@ export type PaymentIntent = typeof PaymentIntent.Type
 /** 1 USDC = 1_000_000 minor units (SPL has 6 decimals). */
 export const MICRO_USDC_PER_USDC = 1_000_000
 
+/**
+ * Exact decimal USDC string -> integer micro-USDC. Null only when malformed.
+ * The single money-math choke point: no floats anywhere near amounts
+ * (0.1 + 0.2 !== 0.3). Used by the parser, the spending-limit check, and UI.
+ */
+export const decimalUsdcToMicro = (raw: string): number | null => {
+  const s = raw.trim()
+  const m = /^(\d+)(?:\.(\d{1,6}))?$/.exec(s)
+  if (!m) {
+    return null
+  }
+  const micro =
+    Number(m[1]) * MICRO_USDC_PER_USDC +
+    Number((m[2] ?? "").padEnd(6, "0") || "0")
+  if (!Number.isSafeInteger(micro)) {
+    return null
+  }
+  return micro
+}
+
 /** intent_<32 hex>, e.g. intent_9f3c… — collision-safe for the PoC. */
 export const createIntentId = (): string =>
   `intent_${crypto.randomUUID().replace(/-/g, "")}`
