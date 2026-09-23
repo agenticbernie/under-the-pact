@@ -140,8 +140,9 @@ Exactly one merchant, centralized in env and exposed read-only through
 Structural guarantee: the module has **no function that accepts a wallet
 address** — the only recipient that can flow to policy (BER-134/135),
 preflight (BER-139) and tx building (Sprint 2) is the configured merchant
-wallet. `MERCHANT_ACTIVE` is a fail-closed kill-switch (anything but an
-explicit true/1/yes deactivates; policy then rejects everything).
+wallet. `MERCHANT_ACTIVE` is a fail-closed kill-switch (only an explicit
+true/1/yes activates — omitted or any other value deactivates; policy
+then rejects everything).
 `GET /api/merchant` publishes the constants for the confirmation UI.
 
 ## What lands next

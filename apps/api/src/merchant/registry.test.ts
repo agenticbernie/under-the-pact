@@ -4,6 +4,8 @@ import { PactConfigLive } from "../config.js"
 import { MerchantRegistryLive, MerchantRegistry } from "./registry.js"
 
 process.env["MERCHANT_WALLET"] = "11111111111111111111111111111111"
+// Fail-closed default is inactive: tests pin explicit activation.
+process.env["MERCHANT_ACTIVE"] = "true"
 
 const useRegistry = <A>(fn: (r: MerchantRegistry) => A): Promise<A> =>
   Effect.runPromise(
@@ -47,6 +49,13 @@ describe("merchant registry (BER-133)", () => {
     // caller can inject an arbitrary recipient through this module.
     const recipient = await useRegistry((r) => r.resolveRecipient())
     expect(recipient).toBe("11111111111111111111111111111111")
+  })
+
+  it("is inactive when MERCHANT_ACTIVE is omitted entirely (Codex P1)", async () => {
+    delete process.env["MERCHANT_ACTIVE"]
+    const active = await useRegistry((r) => r.isActive())
+    expect(active).toBe(false)
+    process.env["MERCHANT_ACTIVE"] = "true"
   })
 
   it("is inactive when MERCHANT_ACTIVE is not explicitly truthy", async () => {

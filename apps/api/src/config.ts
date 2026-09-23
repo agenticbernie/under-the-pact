@@ -78,11 +78,12 @@ const configFromEnv = Effect.gen(function*() {
   const spendingLimitUsdc = yield* Config.number("SPENDING_LIMIT_USDC").pipe(
     Config.withDefault(50)
   )
-  // Kill-switch (BER-133): any value other than an explicit truthy string
-  // deactivates the merchant. Fail-closed: a typo can never silently
-  // enable payments; policy (BER-134) rejects intents for inactive merchants.
+  // Kill-switch (BER-133): only an explicit truthy value activates the
+  // merchant — including when the variable is OMITTED entirely (Codex P1:
+  // an absent deployment setting must never silently enable payments).
+  // Policy (BER-134) rejects intents for inactive merchants.
   const activeRaw = yield* Config.string("MERCHANT_ACTIVE").pipe(
-    Config.withDefault("true")
+    Config.withDefault("")
   )
   const active = /^(true|1|yes)$/i.test(activeRaw.trim())
   const databaseUrl = yield* Config.string("DATABASE_URL").pipe(Config.option)

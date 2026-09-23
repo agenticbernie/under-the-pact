@@ -6,7 +6,9 @@ import { createApp } from "./app.js"
 // MERCHANT_WALLET is required (no placeholder default). Tests pin a
 // valid-format dummy (system program address) — replace with a real
 // devnet wallet via .env for local runs.
+// MERCHANT_ACTIVE defaults to inactive (fail-closed): tests pin it on.
 process.env["MERCHANT_WALLET"] = "11111111111111111111111111111111"
+process.env["MERCHANT_ACTIVE"] = "true"
 
 /** Stubbed LLM boundary: no network, deterministic model JSON. */
 const stubLlm = (reply: string) =>
