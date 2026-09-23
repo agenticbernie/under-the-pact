@@ -130,10 +130,26 @@ Model notes (verified live 2026-09-22):
 - Free tier = rate-limited upstream, no capacity guarantee: fine for
   dev/demo, not production.
 
+## Merchant registry (BER-133, C-004)
+
+Exactly one merchant, centralized in env and exposed read-only through
+`MerchantRegistry` (`apps/api/src/merchant/registry.ts`):
+`merchantId, displayName, recipientWallet, network, supportedTokenMint
+(= USDC_MINT), spendingLimitUsdc, active`.
+
+Structural guarantee: the module has **no function that accepts a wallet
+address** — the only recipient that can flow to policy (BER-134/135),
+preflight (BER-139) and tx building (Sprint 2) is the configured merchant
+wallet. `MERCHANT_ACTIVE` is a fail-closed kill-switch (anything but an
+explicit true/1/yes deactivates; policy then rejects everything).
+`GET /api/merchant` publishes the constants for the confirmation UI.
+
 ## What lands next
 
 - BER-130 input UI ✅: NL textarea + client fast-fail + server validation.
 - BER-131 intent schema ✅: canonical `PaymentIntent` + fixtures + helpers.
 - BER-132 parser ✅ (this branch): real LLM extraction + deterministic mapping.
-- BER-133 merchant registry, BER-134/135 policy engine,
+- BER-133 merchant registry ✅ (this branch): single-merchant module +
+  kill-switch + public constants endpoint.
+- BER-134/135 policy engine,
   BER-138 wallet adapter (Sprint 2).

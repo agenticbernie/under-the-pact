@@ -77,6 +77,27 @@ describe("api skeleton (BER-129)", () => {
     expect(body.code).toBe("INVALID_REQUEST")
   })
 
+  it("GET /api/merchant exposes the single registered merchant", async () => {
+    const app = createApp()
+    const res = await app.request("/api/merchant")
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as {
+      ok: boolean
+      merchant: {
+        merchantId: string
+        recipientWallet: string
+        network: string
+        token: string
+        spendingLimitUsdc: number
+        active: boolean
+      }
+    }
+    expect(body.ok).toBe(true)
+    expect(body.merchant.merchantId).toBe("pact-coffee-demo")
+    expect(body.merchant.token).toBe("USDC")
+    expect(body.merchant.active).toBe(true)
+  })
+
   it("POST /api/intent/parse returns a PARSED intent for good model output", async () => {
     const app = createApp({ llmLayer: stubLlm(goodExtraction) })
     const res = await app.request("/api/intent/parse", {
