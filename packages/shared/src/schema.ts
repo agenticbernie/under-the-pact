@@ -127,7 +127,13 @@ export const PaymentIntent = Schema.Struct({
   // the parser (BER-132) sets expiry = now + TTL, validators reject past ones.
   expiry: IsoDateTime,
   createdAt: IsoDateTime,
-  updatedAt: IsoDateTime
+  updatedAt: IsoDateTime,
+  // HMAC integrity seal over every field above (Qodo PR #7: forged
+  // client intents must never validate). Set by the parser, checked and
+  // re-issued by validation; verified again at confirmation (BER-137).
+  // Seal is integrity, NOT authorization — wallet signing remains the auth.
+  // Server-side intent store (Sprint 3, BER-145/146) replaces seals.
+  seal: Schema.optional(Schema.String)
 }).pipe(Schema.annotations({ identifier: "PaymentIntent" }))
 export type PaymentIntent = typeof PaymentIntent.Type
 

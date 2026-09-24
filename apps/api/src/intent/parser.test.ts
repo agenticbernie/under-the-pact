@@ -8,6 +8,8 @@ import {
   type ParserContext
 } from "./parser.js"
 
+const TEST_SEAL_SECRET = "test-seal-secret-000000000000000000000001"
+
 const ctx: ParserContext = {
   network: "devnet",
   tokenMint: "4zMMC9sEqf9MKyRbf3Tx3sQAr1BLWnCQcHjEXtGbm4o",
@@ -16,6 +18,7 @@ const ctx: ParserContext = {
   merchantDisplayName: "Pact Coffee Demo",
   merchantAliases: ["pact-coffee-demo", "pact coffee demo", "pact", "coffee", "demo"],
   ttlSeconds: 900,
+  sealSecret: TEST_SEAL_SECRET,
   llm: { baseUrl: "https://example.test", apiKey: "test", model: "test" }
 }
 
@@ -64,6 +67,23 @@ describe("toIntentProposal (pure, no LLM)", () => {
     expect(result.intent.amountMicroUsdc).toBe(5_000_000)
     expect(result.intent.merchantId).toBe("pact-coffee-demo")
     expect(result.intent.expiry).toBe("2030-01-01T00:15:00.000Z")
+  })
+
+  it("seals the parsed intent with a verifiable seal", async () => {
+    const { verifyIntentSeal } = await import("./seal.js")
+    const result = toIntentProposal(extraction({}), "Pay 5 USDC", ctx, now)
+    expect(result._tag).toBe("Parsed")
+    if (result._tag === "Parsed") {
+      expect(verifyIntentSeal(result.intent, TEST_SEAL_SECRET)).toBe(true)
+    }
+  })
+
+  it("fails explicit without a seal secret (never unsigned)", () => {
+    const result = toIntentProposal(extraction({}), "Pay 5 USDC", {
+      ...ctx,
+      sealSecret: "  "
+    }, now)
+    expect(result._tag).toBe("SealMisconfigured")
   })
 
   it("asks for the amount when missing", () => {

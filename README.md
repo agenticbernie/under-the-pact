@@ -154,8 +154,20 @@ only) → EXPIRED → INVALID_AMOUNT → RECIPIENT_MISMATCH → OVER_LIMIT →
 VALIDATED. Amounts and limits compare as integer micro-USDC through the
 shared `decimalUsdcToMicro` choke point — never floats. Success returns
 the same values with status VALIDATED; Sprint 2 builds transactions from
-exactly these. Served at `POST /api/intent/validate` (malformed bodies
-are 400 INVALID_REQUEST before the engine runs).
+  exactly these. Served at `POST /api/intent/validate` (malformed bodies
+  are 400 INVALID_REQUEST before the engine runs).
+
+  Trust chain (Qodo PR #7): schema decode → HMAC seal verify → policy.
+  The parser seals every PARSED intent with server-only `INTENT_SEAL_SECRET`;
+  validation rejects forged/unsealed intents with 400 before policy and
+  re-seals VALIDATED output (confirmation re-verifies in BER-137). Seal is
+  integrity, not authorization — wallet signing remains the auth; Sprint 3's
+  intent store replaces seals. Generate with `openssl rand -hex 32`, set it
+  in every deployment env (isolates must share it), never commit it.
+
+  Observability (Qodo PR #7): `INTERNAL_ERROR` (e.g. misconfigured
+  spending limit — also rejected at config load) is a logged HTTP 500;
+  only user-correctable verdicts are 422.
 
 ## What lands next
 

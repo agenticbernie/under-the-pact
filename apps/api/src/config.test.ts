@@ -60,4 +60,20 @@ describe("config fail-fast (Codex P2)", () => {
       )
     ).rejects.toThrow()
   })
+
+  it("fails fast on non-positive or unrepresentable spending limits (Qodo)", async () => {
+    for (const limit of ["0", "-5", "abc", "0.0000001"]) {
+      await expect(
+        withEnv(
+          {
+            SOLANA_NETWORK: "devnet",
+            MERCHANT_WALLET: "11111111111111111111111111111111",
+            SPENDING_LIMIT_USDC: limit
+          },
+          loadMerchantWallet
+        ),
+        `limit ${limit} should fail config load`
+      ).rejects.toThrow()
+    }
+  })
 })

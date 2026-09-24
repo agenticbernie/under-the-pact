@@ -18,6 +18,7 @@ import {
   parsePaymentIntent,
   type ParserContext
 } from "./intent/parser.js"
+import { sealIntent, verifyIntentSeal } from "./intent/seal.js"
 import { validateIntent } from "./policy/engine.js"
 
 /**
@@ -161,6 +162,11 @@ export const createApp = (opts: AppOptions = {}) => {
       )
       const tempParsed = tempRaw.trim().length === 0 ? NaN : Number(tempRaw)
       const temperature = Number.isFinite(tempParsed) ? tempParsed : undefined
+      // Server-only HMAC secret for intent seals (Qodo PR #7).
+      // Empty = unconfigured: parse/validate fail explicit, never unsigned.
+      const sealSecret = yield* Config.string("INTENT_SEAL_SECRET").pipe(
+        Config.withDefault("")
+      )
       const ttlRaw = yield* Config.string("INTENT_TTL_SECONDS").pipe(
         Config.withDefault("900")
       )
@@ -189,11 +195,18 @@ export const createApp = (opts: AppOptions = {}) => {
           cfg.merchant.merchantId
         ),
         ttlSeconds,
+        sealSecret,
         llm: { baseUrl, apiKey, model, temperature }
       }
       const result = yield* parsePaymentIntent(shaped.right.text, ctx).pipe(
         Effect.catchAll((e) =>
-          Effect.succeed({ _tag: "ParserFailed", message: e.message } as const)
+          Effect.succeed(
+            {
+              _tag: "ParserFailed",
+              code: e.code,
+              message: e.message
+            } as const
+          )
         )
       )
       if (result._tag === "Parsed") {
@@ -210,11 +223,15 @@ export const createApp = (opts: AppOptions = {}) => {
           }
         } as const
       }
+      // Server misconfiguration is a logged 500, never a client code.
+      if (result.code === PolicyErrorCode.INTERNAL_ERROR) {
+        console.error("[pact-api] parser misconfigured:", result.message)
+      }
       return {
         status: 500,
         body: {
           ok: false,
-          code: PolicyErrorCode.PARSER_ERROR,
+          code: result.code,
           message: result.message
         }
       } as const
@@ -235,9 +252,11 @@ export const createApp = (opts: AppOptions = {}) => {
   })
 
   // BER-134 + BER-135: deterministic validation as a service.
-  // Input is decoded through the canonical schema first — frontend and AI
-  // output cannot bypass policy. Success returns the same values with
-  // status VALIDATED (Sprint 2 builds transactions from exactly these).
+  // Trust chain (Qodo PR #7): schema decode -> seal verify -> policy.
+  // A forged or re-signed intent fails at the seal with 400, before policy
+  // ever sees it. Success re-seals the VALIDATED intent (status changed).
+  // INTERNAL_ERROR (e.g. misconfigured limit) is a logged 500; only
+  // user-correctable verdicts are 422.
   app.post("/api/intent/validate", async (c) => {
     let body: unknown
     try {
@@ -269,6 +288,31 @@ export const createApp = (opts: AppOptions = {}) => {
     }
     const program = Effect.gen(function* () {
       const cfg = yield* PactConfigService
+      const sealSecret = yield* Config.string("INTENT_SEAL_SECRET").pipe(
+        Config.withDefault("")
+      )
+      if (sealSecret.trim().length === 0) {
+        console.error("[pact-api] intent sealing not configured")
+        return {
+          status: 500,
+          body: {
+            ok: false,
+            code: PolicyErrorCode.INTERNAL_ERROR,
+            message: "Intent sealing is not configured."
+          }
+        } as const
+      }
+      if (!verifyIntentSeal(shaped.right, sealSecret)) {
+        return {
+          status: 400,
+          body: {
+            ok: false,
+            code: PolicyErrorCode.INVALID_REQUEST,
+            message:
+              "Intent seal invalid — submit intents only as received from /parse."
+          }
+        } as const
+      }
       const result = yield* validateIntent(shaped.right, {
         merchant: cfg.merchant
       }).pipe(
@@ -280,7 +324,22 @@ export const createApp = (opts: AppOptions = {}) => {
       if (result._tag === "Validated") {
         return {
           status: 200,
-          body: { ok: true, intent: result.intent }
+          body: {
+            ok: true,
+            intent: sealIntent(result.intent, sealSecret)
+          }
+        } as const
+      }
+      // Server misconfiguration is a logged 500, never a client code.
+      if (result.error.code === PolicyErrorCode.INTERNAL_ERROR) {
+        console.error("[pact-api] policy misconfigured:", result.error.message)
+        return {
+          status: 500,
+          body: {
+            ok: false,
+            code: PolicyErrorCode.INTERNAL_ERROR,
+            message: result.error.message
+          }
         } as const
       }
       return {
@@ -298,7 +357,13 @@ export const createApp = (opts: AppOptions = {}) => {
     if (out.status === 200) {
       return c.json(out.body, 200)
     }
-    return c.json(out.body, 422)
+    if (out.status === 422) {
+      return c.json(out.body, 422)
+    }
+    if (out.status === 400) {
+      return c.json(out.body, 400)
+    }
+    return c.json(out.body, 500)
   })
 
   app.get("/", (c) =>
