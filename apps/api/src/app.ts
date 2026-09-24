@@ -19,6 +19,10 @@ import {
   type ParserContext
 } from "./intent/parser.js"
 import { sealIntent, verifyIntentSeal } from "./intent/seal.js"
+import {
+  decideConfirmation,
+  type ConfirmationDecision
+} from "./intent/confirm.js"
 import { validateIntent } from "./policy/engine.js"
 
 /**
@@ -338,6 +342,128 @@ export const createApp = (opts: AppOptions = {}) => {
           body: {
             ok: false,
             code: PolicyErrorCode.INTERNAL_ERROR,
+            message: result.error.message
+          }
+        } as const
+      }
+      return {
+        status: 422,
+        body: {
+          ok: false,
+          code: result.error.code,
+          message: result.error.message
+        }
+      } as const
+    })
+    const out = await Effect.runPromise(
+      program.pipe(Effect.provide(PactConfigLive))
+    )
+    if (out.status === 200) {
+      return c.json(out.body, 200)
+    }
+    if (out.status === 422) {
+      return c.json(out.body, 422)
+    }
+    if (out.status === 400) {
+      return c.json(out.body, 400)
+    }
+    return c.json(out.body, 500)
+  })
+
+  // BER-137: explicit confirmation boundary (C-006).
+  // VALIDATED + sealed + {confirm|cancel} -> CONFIRMED/CANCELLED + event.
+  // Policy re-runs on a fresh clock, so expiry between validate and
+  // confirm is caught. Tampered payloads break the seal (400) before
+  // anything else. Cancelled intents create no transaction — nothing in
+  // Sprint 1 creates one at all (Sprint Gate).
+  app.post("/api/intent/confirm", async (c) => {
+    let body: unknown
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json(
+        {
+          ok: false,
+          code: PolicyErrorCode.INVALID_REQUEST,
+          message: "Request body must be JSON with 'intent' and 'decision'."
+        },
+        400
+      )
+    }
+    const raw =
+      typeof body === "object" && body !== null
+        ? (body as { intent?: unknown; decision?: unknown })
+        : {}
+    const shaped = Schema.decodeUnknownEither(PaymentIntent)(raw.intent)
+    if (shaped._tag === "Left") {
+      return c.json(
+        {
+          ok: false,
+          code: PolicyErrorCode.INVALID_REQUEST,
+          message: "Body 'intent' must be a canonical PaymentIntent."
+        },
+        400
+      )
+    }
+    if (raw.decision !== "confirm" && raw.decision !== "cancel") {
+      return c.json(
+        {
+          ok: false,
+          code: PolicyErrorCode.INVALID_REQUEST,
+          message: "Body 'decision' must be 'confirm' or 'cancel'."
+        },
+        400
+      )
+    }
+    const program = Effect.gen(function* () {
+      const cfg = yield* PactConfigService
+      const sealSecret = yield* Config.string("INTENT_SEAL_SECRET").pipe(
+        Config.withDefault("")
+      )
+      const result = yield* decideConfirmation(
+        shaped.right,
+        raw.decision as ConfirmationDecision,
+        { merchant: cfg.merchant },
+        sealSecret
+      ).pipe(
+        Effect.map(
+          ({ intent, event }) => ({ _tag: "Decided", intent, event }) as const
+        ),
+        Effect.catchAll((error) =>
+          Effect.succeed({ _tag: "Rejected", error } as const)
+        )
+      )
+      if (result._tag === "Decided") {
+        return {
+          status: 200,
+          body: { ok: true, intent: result.intent, event: result.event }
+        } as const
+      }
+      if (
+        result.error.code === PolicyErrorCode.INTERNAL_ERROR ||
+        result.error.code === PolicyErrorCode.INVALID_REQUEST
+      ) {
+        // Forgery/misconfiguration surface explicitly; forgery is the
+        // client's doing but must never read as a policy verdict.
+        if (result.error.code === PolicyErrorCode.INTERNAL_ERROR) {
+          console.error(
+            "[pact-api] confirmation misconfigured:",
+            result.error.message
+          )
+          return {
+            status: 500,
+            body: {
+              ok: false,
+              code: PolicyErrorCode.INTERNAL_ERROR,
+              message: result.error.message
+            }
+          } as const
+        }
+        return {
+          status: 400,
+          body: {
+            ok: false,
+            code: PolicyErrorCode.INVALID_REQUEST,
             message: result.error.message
           }
         } as const

@@ -169,6 +169,25 @@ the same values with status VALIDATED; Sprint 2 builds transactions from
   spending limit — also rejected at config load) is a logged HTTP 500;
   only user-correctable verdicts are 422.
 
+## Confirmation boundary (BER-136 + BER-137, C-001/C-006)
+
+`POST /api/intent/confirm {intent, decision: confirm|cancel}`: seal
+verify → VALIDATED-only gate → full policy re-run on a fresh clock
+(expiry between validate and confirm is caught) → CONFIRMED/CANCELLED
+intent (re-sealed, `confirmedAt` set) + distinct `{type, intentId, actor,
+at}` event. Cancel skips policy (backing out always works) and creates
+nothing. `assertConfirmed()` is the execution gate Sprint 2's tx builder
+must pass: sealed + CONFIRMED + unexpired, else stable codes.
+
+The web summary renders merchant, amount, USDC, network, recipient,
+purpose, and expiry from the VALIDATED intent only, with risk info and
+Confirm/Cancel controls. Rendering creates and signs nothing.
+
+## Sprint 1 exit
+
+NL request → PARSED → VALIDATED → summary → CONFIRMED/CANCELLED, with
+no transaction construction anywhere in the codebase (Sprint Gate).
+
 ## What lands next
 
 - BER-130 input UI ✅: NL textarea + client fast-fail + server validation.
@@ -177,5 +196,7 @@ the same values with status VALIDATED; Sprint 2 builds transactions from
 - BER-133 merchant registry ✅: single-merchant module + kill-switch.
 - BER-134/135 policy engine ✅ (this branch): deterministic validation +
   stable codes + validate endpoint.
-- BER-136 summary view, BER-137 confirmation,
-  BER-138 wallet adapter (Sprint 2).
+- BER-136 summary view ✅ (this branch): validated-only summary + risk info.
+- BER-137 confirmation ✅ (this branch): seal/policy-gated boundary +
+  CONFIRMED/CANCELLED + events + Sprint 2 execution gate.
+- Sprint 2: wallet adapter, preflight, tx build/sign/submit.

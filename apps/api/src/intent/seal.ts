@@ -31,7 +31,8 @@ const SEALED_FIELDS = [
   "userWallet",
   "expiry",
   "createdAt",
-  "updatedAt"
+  "updatedAt",
+  "confirmedAt"
 ] as const
 
 type Sealable = Record<(typeof SEALED_FIELDS)[number], unknown>

@@ -18,7 +18,8 @@ import {
  *  1. UNKNOWN_MERCHANT — id mismatch or inactive merchant (134)
  *  2. WRONG_NETWORK   — intent network != merchant network (134)
  *  3. WRONG_MINT      — tokenMint != configured mint (token is schema-USDC) (134)
- *  4. NOT_VALIDATED   — only PARSED intents enter validation (137 gate)
+ *  4. NOT_VALIDATED   — only PARSED or VALIDATED intents enter validation:
+ *     fresh parses, plus re-validation at confirmation time (137 gate)
  *  5. EXPIRED         — expiry <= now; expired never reaches confirmation (135)
  *  6. INVALID_AMOUNT  — defensive: schema already guarantees positive int (135)
  *  7. RECIPIENT_MISMATCH — recipient != registered merchant wallet (135)
@@ -32,11 +33,13 @@ export class PolicyError extends Data.TaggedError("PolicyError")<{
     | typeof PolicyErrorCode.WRONG_NETWORK
     | typeof PolicyErrorCode.WRONG_MINT
     | typeof PolicyErrorCode.NOT_VALIDATED
+    | typeof PolicyErrorCode.CONFIRMATION_REQUIRED
     | typeof PolicyErrorCode.EXPIRED
     | typeof PolicyErrorCode.INVALID_AMOUNT
     | typeof PolicyErrorCode.RECIPIENT_MISMATCH
     | typeof PolicyErrorCode.OVER_LIMIT
     | typeof PolicyErrorCode.INTERNAL_ERROR
+    | typeof PolicyErrorCode.INVALID_REQUEST
   message: string
 }> {}
 
@@ -80,9 +83,11 @@ export const validateIntent = (
       )
     }
 
-    // Only PARSED intents enter validation — nothing skips the parser,
-    // and validated intents are the only ones confirmation accepts.
-    if (intent.status !== "PARSED") {
+    // Only PARSED intents enter validation fresh, plus VALIDATED ones for
+    // re-validation at confirmation time (BER-137 re-runs policy with a
+    // fresh clock so expiry between validate and confirm is caught).
+    // Nothing else — especially CONFIRMED/CANCELLED — is consumable here.
+    if (intent.status !== "PARSED" && intent.status !== "VALIDATED") {
       return yield* fail(
         PolicyErrorCode.NOT_VALIDATED,
         `Intent status ${intent.status} cannot enter validation; expected PARSED.`

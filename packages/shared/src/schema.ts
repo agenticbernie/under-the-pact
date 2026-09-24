@@ -125,9 +125,11 @@ export const PaymentIntent = Schema.Struct({
   userWallet: Schema.optional(SolanaAddress),
   // ISO-8601 UTC instants. Expiry enforcement is policy (BER-135):
   // the parser (BER-132) sets expiry = now + TTL, validators reject past ones.
+  // confirmedAt is set once, by confirmation (BER-137), never by clients.
   expiry: IsoDateTime,
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
+  confirmedAt: Schema.optional(IsoDateTime),
   // HMAC integrity seal over every field above (Qodo PR #7: forged
   // client intents must never validate). Set by the parser, checked and
   // re-issued by validation; verified again at confirmation (BER-137).
