@@ -137,6 +137,7 @@ const apiUrl = import.meta.env.PUBLIC_API_URL ?? "http://localhost:8787";
 
       function hideSummary() {
         currentIntent = null;
+        confirmResult.textContent = "";
         summaryCard.hidden = true;
       }
 
@@ -144,6 +145,10 @@ const apiUrl = import.meta.env.PUBLIC_API_URL ?? "http://localhost:8787";
         if (!currentIntent) {
           return;
         }
+        // Generation guard (Qodo PR #8): apply this response only if the
+        // same intent is still displayed — a newer summary invalidates it.
+        const sentIntentId = currentIntent.intentId;
+        const stillCurrent = () => currentIntent?.intentId === sentIntentId;
         btnConfirm.disabled = true;
         btnCancel.disabled = true;
         confirmResult.textContent = decision === "confirm" ? "Confirming…" : "Cancelling…";
@@ -160,6 +165,10 @@ const apiUrl = import.meta.env.PUBLIC_API_URL ?? "http://localhost:8787";
             intent?: { status: string };
             event?: { type: string };
           };
+          if (!stillCurrent()) {
+            // A newer summary arrived mid-flight: discard this response.
+            return;
+          }
           if (res.ok && body.intent && body.event) {
             if (body.event.type === "CONFIRMED") {
               // Sprint exit: awaiting explicit wallet signing (Sprint 2).
@@ -176,10 +185,15 @@ const apiUrl = import.meta.env.PUBLIC_API_URL ?? "http://localhost:8787";
             btnCancel.disabled = true;
           } else {
             confirmResult.textContent = `Could not ${decision}: ${body.message || body.code || res.status}.`;
-            btnConfirm.disabled = false;
-            btnCancel.disabled = false;
+            if (stillCurrent()) {
+              btnConfirm.disabled = false;
+              btnCancel.disabled = false;
+            }
           }
         } catch (err) {
+          if (!stillCurrent()) {
+            return;
+          }
           confirmResult.textContent = "Backend not reachable — start pnpm dev:api.";
           btnConfirm.disabled = false;
           btnCancel.disabled = false;
@@ -194,8 +208,11 @@ const apiUrl = import.meta.env.PUBLIC_API_URL ?? "http://localhost:8787";
         error.textContent = "";
         // Stale responses must never linger under edited text (Codex P2):
         // any keystroke invalidates the previous round-trip display.
+        // A changed request also retires its summary: confirming the old
+        // payment under new text must be impossible (Qodo PR #8).
         if (!input.disabled) {
           status.textContent = "";
+          hideSummary();
         }
       });
 
@@ -203,6 +220,9 @@ const apiUrl = import.meta.env.PUBLIC_API_URL ?? "http://localhost:8787";
         e.preventDefault();
         error.textContent = "";
         status.textContent = "";
+        // A new submission retires any previous summary first: confirming
+        // the old payment while the new request runs must be impossible.
+        hideSummary();
         const checked = validateRequestText(input.value);
         if (!checked.ok) {
           error.textContent = checked.error;
@@ -277,18 +297,22 @@ const apiUrl = import.meta.env.PUBLIC_API_URL ?? "http://localhost:8787";
               status.textContent = `Rejected: ${verdict.code || vres.status}.`;
             }
           } else if (res.status === 422 && body.code === "AMBIGUOUS_REQUEST") {
+            hideSummary();
             error.textContent = body.message || "Need a bit more detail.";
             if (body.missing?.length) {
               error.textContent += ` (missing: ${body.missing.join(", ")})`;
             }
             status.textContent = "";
           } else if (!res.ok) {
+            hideSummary();
             error.textContent = body.message || `Request rejected (${body.code || res.status}).`;
             status.textContent = "";
           } else {
+            hideSummary();
             status.textContent = JSON.stringify(body);
           }
         } catch (err) {
+          hideSummary();
           error.textContent = "Backend not reachable — start pnpm dev:api.";
           status.textContent = "";
         } finally {

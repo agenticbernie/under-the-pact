@@ -63,6 +63,21 @@ export const decideConfirmation = (
         })
       )
     }
+    // Lifecycle gate first (Qodo PR #8, Codex P2): BOTH branches require
+    // a VALIDATED source state, so PARSED/CONFIRMED/CANCELLED intents can
+    // never be rewritten into contradictory terminal states or events.
+    // Cancel still skips policy below, so an expired VALIDATED intent
+    // remains cancellable. Single-use/replay protection across calls needs
+    // the Sprint 3 lifecycle store (BER-146); until then every decision is
+    // independently verified (seal + status + fresh policy).
+    if (intent.status !== "VALIDATED") {
+      return yield* Effect.fail(
+        new PolicyError({
+          code: PolicyErrorCode.NOT_VALIDATED,
+          message: `Only VALIDATED intents can decide (got ${intent.status}).`
+        })
+      )
+    }
     if (decision === "cancel") {
       // Cancel needs no policy: backing out always works, even when expired.
       // It produces no transaction by construction.
@@ -80,15 +95,7 @@ export const decideConfirmation = (
         } as ConfirmationEvent
       }
     }
-    // Confirm: VALIDATED only, then full policy with a fresh clock.
-    if (intent.status !== "VALIDATED") {
-      return yield* Effect.fail(
-        new PolicyError({
-          code: PolicyErrorCode.NOT_VALIDATED,
-          message: `Only VALIDATED intents can be confirmed (got ${intent.status}).`
-        })
-      )
-    }
+    // Confirm: full policy with a fresh clock.
     const revalidated = yield* validateIntent(intent, ctx, now)
     const confirmed = sealIntent(
       {
@@ -121,10 +128,17 @@ export const assertConfirmed = (
   now: Date = new Date()
 ): Effect.Effect<ConfirmedIntent, PolicyError> =>
   Effect.gen(function* () {
-    if (
-      sealSecret.trim().length === 0 ||
-      !verifyIntentSeal(intent, sealSecret)
-    ) {
+    // Operator outage vs bad input must stay distinguishable (Codex P2):
+    // a blank secret is logged 500 INTERNAL_ERROR, a bad seal is 400.
+    if (sealSecret.trim().length === 0) {
+      return yield* Effect.fail(
+        new PolicyError({
+          code: PolicyErrorCode.INTERNAL_ERROR,
+          message: "Intent sealing is not configured."
+        })
+      )
+    }
+    if (!verifyIntentSeal(intent, sealSecret)) {
       return yield* Effect.fail(
         new PolicyError({
           code: PolicyErrorCode.INVALID_REQUEST,

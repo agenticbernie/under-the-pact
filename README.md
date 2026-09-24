@@ -199,4 +199,11 @@ no transaction construction anywhere in the codebase (Sprint Gate).
 - BER-136 summary view ✅ (this branch): validated-only summary + risk info.
 - BER-137 confirmation ✅ (this branch): seal/policy-gated boundary +
   CONFIRMED/CANCELLED + events + Sprint 2 execution gate.
+
+Replay note (Qodo PR #8): Sprint 1 is stateless — every decision is
+independently verified (seal + VALIDATED-only + fresh policy), and
+terminal states cannot be rewritten (confirm/cancel of non-VALIDATED
+intents is rejected). Single-use consumption across calls needs the
+Sprint 3 lifecycle store (BER-145 audit + BER-146 idempotency), which
+replaces seals as the source of truth.
 - Sprint 2: wallet adapter, preflight, tx build/sign/submit.

@@ -90,7 +90,7 @@ export const validateIntent = (
     if (intent.status !== "PARSED" && intent.status !== "VALIDATED") {
       return yield* fail(
         PolicyErrorCode.NOT_VALIDATED,
-        `Intent status ${intent.status} cannot enter validation; expected PARSED.`
+        `Intent status ${intent.status} cannot enter validation; expected PARSED or VALIDATED.`
       )
     }
 

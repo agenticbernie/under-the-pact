@@ -108,6 +108,9 @@ describe("confirmation boundary (BER-137)", () => {
     const base = Schema.decodeUnknownSync(PaymentIntent)(validIntentFixture())
     const parsedOnly = sealIntent({ ...base, status: "PARSED" as const }, SECRET)
     expect(await decideCode(parsedOnly, "confirm")).toBe("NOT_VALIDATED")
+    // Cancel is gated too: PARSED/CONFIRMED/CANCELLED can never be
+    // rewritten into contradictory terminal states (Qodo PR #8, Codex P2).
+    expect(await decideCode(parsedOnly, "cancel")).toBe("NOT_VALIDATED")
 
     const forged = {
       ...(await validatedIntent()),
@@ -115,6 +118,17 @@ describe("confirmation boundary (BER-137)", () => {
     } as PaymentIntentType
     expect(await decideCode(forged, "confirm")).toBe("INVALID_REQUEST")
     expect(await decideCode(forged, "cancel")).toBe("INVALID_REQUEST")
+  })
+
+  it("rejects replaying terminal states (no contradictory outcomes)", async () => {
+    const confirmed = await Effect.runPromise(
+      decideConfirmation(await validatedIntent(), "confirm", ctx, SECRET, NOW).pipe(
+        Effect.catchAll(() => Effect.die(new Error("confirm must succeed")))
+      )
+    )
+    // An already-CONFIRMED copy cannot be confirmed or cancelled again.
+    expect(await decideCode(confirmed.intent, "confirm")).toBe("NOT_VALIDATED")
+    expect(await decideCode(confirmed.intent, "cancel")).toBe("NOT_VALIDATED")
   })
 
   it("catches expiry between validate and confirm", async () => {
@@ -166,5 +180,7 @@ describe("execution gate (Sprint 2 contract)", () => {
       amountMicroUsdc: 2
     } as PaymentIntentType
     expect(await gateCode(forged)).toBe("INVALID_REQUEST")
+    // Blank secret is an outage (500-class), not a client forgery.
+    expect(await gateCode(exit.intent, NOW, "  ")).toBe("INTERNAL_ERROR")
   })
 })
