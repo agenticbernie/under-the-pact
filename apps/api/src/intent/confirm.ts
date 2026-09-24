@@ -5,6 +5,7 @@ import {
   type PaymentIntent
 } from "@pact/shared"
 import { validateIntent, PolicyError, type PolicyContext } from "../policy/engine.js"
+import { LifecycleStore } from "../policy/lifecycle.js"
 import { sealIntent, verifyIntentSeal } from "./seal.js"
 
 /**
@@ -14,13 +15,15 @@ import { sealIntent, verifyIntentSeal } from "./seal.js"
  * CONFIRMED (user said yes) or CANCELLED (user said no). Cancelled
  * intents create no transaction — nothing in Sprint 1 creates one at all.
  *
- * Every path re-verifies the seal and re-runs policy with a fresh clock:
- * - Only VALIDATED intents enter (PARSED must validate first).
- * - Expired-between-validate-and-confirm is caught here, never executed.
- * - The confirmation payload cannot smuggle new amount/recipient/token/
- *   network values: any change breaks the seal (400) before policy runs.
- * - Confirmation is returned as intent + distinct event (auditable;
- *   persisted by Sprint 3 audit storage).
+ * Single-use lifecycle (Qodo PR #8 problem 2): decisions consume the
+ * authoritative stored state exactly once per intent ID —
+ *  seal verify → stored status must be VALIDATED (NOT_VALIDATED when
+ *  unknown, DUPLICATE_INTENT when already decided) → confirm runs fresh
+ *  policy, cancel skips it (expired-VALIDATED stays cancellable) →
+ *  atomic consume → sealed terminal intent + distinct event.
+ * Replay (confirm-after-cancel, double-confirm, stale copies) is rejected;
+ * the Sprint 3 Postgres adapter replaces the memory store with no changes
+ * here.
  */
 
 export type ConfirmationDecision = "confirm" | "cancel"
@@ -35,6 +38,12 @@ export interface ConfirmationEvent {
 export type ConfirmedIntent = PaymentIntent & { status: "CONFIRMED" }
 export type CancelledIntent = PaymentIntent & { status: "CANCELLED" }
 
+const eventFor = (
+  type: ConfirmationEvent["type"],
+  intentId: string,
+  now: Date
+): ConfirmationEvent => ({ type, intentId, actor: "user", at: now.toISOString() })
+
 export const decideConfirmation = (
   intent: PaymentIntent,
   decision: ConfirmationDecision,
@@ -43,7 +52,8 @@ export const decideConfirmation = (
   now: Date = new Date()
 ): Effect.Effect<
   { intent: ConfirmedIntent | CancelledIntent; event: ConfirmationEvent },
-  PolicyError
+  PolicyError,
+  LifecycleStore
 > =>
   Effect.gen(function* () {
     if (sealSecret.trim().length === 0) {
@@ -63,13 +73,8 @@ export const decideConfirmation = (
         })
       )
     }
-    // Lifecycle gate first (Qodo PR #8, Codex P2): BOTH branches require
-    // a VALIDATED source state, so PARSED/CONFIRMED/CANCELLED intents can
-    // never be rewritten into contradictory terminal states or events.
-    // Cancel still skips policy below, so an expired VALIDATED intent
-    // remains cancellable. Single-use/replay protection across calls needs
-    // the Sprint 3 lifecycle store (BER-146); until then every decision is
-    // independently verified (seal + status + fresh policy).
+    // Lifecycle gate: the single-use state machine lives in the store,
+    // not in the client-held copy.
     if (intent.status !== "VALIDATED") {
       return yield* Effect.fail(
         new PolicyError({
@@ -78,24 +83,54 @@ export const decideConfirmation = (
         })
       )
     }
+    const store = yield* LifecycleStore
+    const record = store.get(intent.intentId)
+    if (record === undefined) {
+      return yield* Effect.fail(
+        new PolicyError({
+          code: PolicyErrorCode.NOT_VALIDATED,
+          message: "Unknown intent — validate it through this server first."
+        })
+      )
+    }
+    if (record.status !== "VALIDATED") {
+      return yield* Effect.fail(
+        new PolicyError({
+          code: PolicyErrorCode.DUPLICATE_INTENT,
+          message: `Intent already decided (${record.status}).`
+        })
+      )
+    }
+
     if (decision === "cancel") {
-      // Cancel needs no policy: backing out always works, even when expired.
+      // Cancel skips policy: backing out always works, even when expired.
       // It produces no transaction by construction.
       const cancelled = sealIntent(
         { ...intent, status: "CANCELLED", updatedAt: now.toISOString() },
         sealSecret
       ) as CancelledIntent
+      if (
+        !store.consume(intent.intentId, {
+          status: "CANCELLED",
+          seal: cancelled.seal as string,
+          updatedAt: now.toISOString()
+        })
+      ) {
+        return yield* Effect.fail(
+          new PolicyError({
+            code: PolicyErrorCode.DUPLICATE_INTENT,
+            message: "Intent already decided."
+          })
+        )
+      }
       return {
         intent: cancelled,
-        event: {
-          type: "CANCELLED",
-          intentId: intent.intentId,
-          actor: "user",
-          at: now.toISOString()
-        } as ConfirmationEvent
+        event: eventFor("CANCELLED", intent.intentId, now)
       }
     }
-    // Confirm: full policy with a fresh clock.
+
+    // Confirm runs full policy on a fresh clock: expiry between validate
+    // and confirm is caught here, never executed.
     const revalidated = yield* validateIntent(intent, ctx, now)
     const confirmed = sealIntent(
       {
@@ -106,27 +141,37 @@ export const decideConfirmation = (
       },
       sealSecret
     ) as ConfirmedIntent
+    if (
+      !store.consume(intent.intentId, {
+        status: "CONFIRMED",
+        seal: confirmed.seal as string,
+        updatedAt: now.toISOString()
+      })
+    ) {
+      return yield* Effect.fail(
+        new PolicyError({
+          code: PolicyErrorCode.DUPLICATE_INTENT,
+          message: "Intent already decided."
+        })
+      )
+    }
     return {
       intent: confirmed,
-      event: {
-        type: "CONFIRMED",
-        intentId: intent.intentId,
-        actor: "user",
-        at: now.toISOString()
-      } as ConfirmationEvent
+      event: eventFor("CONFIRMED", intent.intentId, now)
     }
   })
 
 /**
  * Execution gate for Sprint 2 (BER-140): the transaction builder consumes
- * ONLY Intents that pass here — sealed, CONFIRMED, unexpired.
- * Cancelled/expired/forged intents cannot reach signing or submission.
+ * ONLY Intents whose authoritative stored snapshot is CONFIRMED with a
+ * matching seal. Older sealed copies (PARSED/VALIDATED snapshots, mutated
+ * payloads) and terminal-but-cancelled intents are all refused.
  */
 export const assertConfirmed = (
   intent: PaymentIntent,
   sealSecret: string,
   now: Date = new Date()
-): Effect.Effect<ConfirmedIntent, PolicyError> =>
+): Effect.Effect<ConfirmedIntent, PolicyError, LifecycleStore> =>
   Effect.gen(function* () {
     // Operator outage vs bad input must stay distinguishable (Codex P2):
     // a blank secret is logged 500 INTERNAL_ERROR, a bad seal is 400.
@@ -146,11 +191,21 @@ export const assertConfirmed = (
         })
       )
     }
-    if (intent.status !== "CONFIRMED") {
+    const store = yield* LifecycleStore
+    const record = store.get(intent.intentId)
+    if (record === undefined) {
+      return yield* Effect.fail(
+        new PolicyError({
+          code: PolicyErrorCode.NOT_VALIDATED,
+          message: "No authoritative record — confirm through this server first."
+        })
+      )
+    }
+    if (record.status !== "CONFIRMED" || record.seal !== intent.seal) {
       return yield* Effect.fail(
         new PolicyError({
           code: PolicyErrorCode.CONFIRMATION_REQUIRED,
-          message: `Execution requires a CONFIRMED intent (got ${intent.status}).`
+          message: `Execution requires the current CONFIRMED snapshot (stored: ${record.status}).`
         })
       )
     }

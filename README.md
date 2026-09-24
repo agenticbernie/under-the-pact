@@ -200,10 +200,11 @@ no transaction construction anywhere in the codebase (Sprint Gate).
 - BER-137 confirmation ✅ (this branch): seal/policy-gated boundary +
   CONFIRMED/CANCELLED + events + Sprint 2 execution gate.
 
-Replay note (Qodo PR #8): Sprint 1 is stateless — every decision is
-independently verified (seal + VALIDATED-only + fresh policy), and
-terminal states cannot be rewritten (confirm/cancel of non-VALIDATED
-intents is rejected). Single-use consumption across calls needs the
-Sprint 3 lifecycle store (BER-145 audit + BER-146 idempotency), which
-replaces seals as the source of truth.
+Replay note (Qodo PR #8): decisions consume a server-side lifecycle
+store keyed by intent ID (`apps/api/src/policy/lifecycle.ts`) — each
+intent decides exactly once (replays get DUPLICATE_INTENT), terminal
+states are sticky across re-validation, and the execution gate checks
+the stored CONFIRMED snapshot instead of trusting client copies. The
+Sprint 1 adapter is per app instance/isolate; Sprint 3 (BER-145/146)
+swaps in Postgres with no changes to confirm.ts/app.ts.
 - Sprint 2: wallet adapter, preflight, tx build/sign/submit.

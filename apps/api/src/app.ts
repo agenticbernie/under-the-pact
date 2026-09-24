@@ -23,6 +23,10 @@ import {
   decideConfirmation,
   type ConfirmationDecision
 } from "./intent/confirm.js"
+import {
+  LifecycleStore,
+  lifecycleMemoryLayer
+} from "./policy/lifecycle.js"
 import { validateIntent } from "./policy/engine.js"
 
 /**
@@ -35,10 +39,15 @@ import { validateIntent } from "./policy/engine.js"
 export interface AppOptions {
   /** Override the LLM boundary in tests — production uses LlmLive. */
   llmLayer?: Layer.Layer<LlmClient>
+  /** Override the lifecycle store in tests — one fresh store per app. */
+  lifecycleLayer?: Layer.Layer<LifecycleStore>
 }
 
 export const createApp = (opts: AppOptions = {}) => {
   const app = new Hono()
+  // One store per app instance: isolated in tests, single copy per
+  // process/isolate in production (Sprint 3 Postgres replaces it).
+  const lifecycle = opts.lifecycleLayer ?? lifecycleMemoryLayer()
 
   // FE origins: local Astro + Cloudflare Pages preview/prod (wired via env later)
   app.use(
@@ -326,11 +335,20 @@ export const createApp = (opts: AppOptions = {}) => {
         )
       )
       if (result._tag === "Validated") {
+        // Record the authoritative snapshot: confirmation consumes it
+        // exactly once by intent ID (Qodo PR #8 problem 2).
+        const store = yield* LifecycleStore
+        const sealed = sealIntent(result.intent, sealSecret)
+        store.recordValidated(
+          sealed.intentId,
+          sealed.seal as string,
+          sealed.updatedAt
+        )
         return {
           status: 200,
           body: {
             ok: true,
-            intent: sealIntent(result.intent, sealSecret)
+            intent: sealed
           }
         } as const
       }
@@ -356,7 +374,7 @@ export const createApp = (opts: AppOptions = {}) => {
       } as const
     })
     const out = await Effect.runPromise(
-      program.pipe(Effect.provide(PactConfigLive))
+      program.pipe(Effect.provide(PactConfigLive), Effect.provide(lifecycle))
     )
     if (out.status === 200) {
       return c.json(out.body, 200)
@@ -478,7 +496,7 @@ export const createApp = (opts: AppOptions = {}) => {
       } as const
     })
     const out = await Effect.runPromise(
-      program.pipe(Effect.provide(PactConfigLive))
+      program.pipe(Effect.provide(PactConfigLive), Effect.provide(lifecycle))
     )
     if (out.status === 200) {
       return c.json(out.body, 200)

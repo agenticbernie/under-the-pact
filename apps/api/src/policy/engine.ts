@@ -34,6 +34,7 @@ export class PolicyError extends Data.TaggedError("PolicyError")<{
     | typeof PolicyErrorCode.WRONG_MINT
     | typeof PolicyErrorCode.NOT_VALIDATED
     | typeof PolicyErrorCode.CONFIRMATION_REQUIRED
+    | typeof PolicyErrorCode.DUPLICATE_INTENT
     | typeof PolicyErrorCode.EXPIRED
     | typeof PolicyErrorCode.INVALID_AMOUNT
     | typeof PolicyErrorCode.RECIPIENT_MISMATCH
