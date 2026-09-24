@@ -127,12 +127,38 @@ export const PaymentIntent = Schema.Struct({
   // the parser (BER-132) sets expiry = now + TTL, validators reject past ones.
   expiry: IsoDateTime,
   createdAt: IsoDateTime,
-  updatedAt: IsoDateTime
+  updatedAt: IsoDateTime,
+  // HMAC integrity seal over every field above (Qodo PR #7: forged
+  // client intents must never validate). Set by the parser, checked and
+  // re-issued by validation; verified again at confirmation (BER-137).
+  // Seal is integrity, NOT authorization — wallet signing remains the auth.
+  // Server-side intent store (Sprint 3, BER-145/146) replaces seals.
+  seal: Schema.optional(Schema.String)
 }).pipe(Schema.annotations({ identifier: "PaymentIntent" }))
 export type PaymentIntent = typeof PaymentIntent.Type
 
 /** 1 USDC = 1_000_000 minor units (SPL has 6 decimals). */
 export const MICRO_USDC_PER_USDC = 1_000_000
+
+/**
+ * Exact decimal USDC string -> integer micro-USDC. Null only when malformed.
+ * The single money-math choke point: no floats anywhere near amounts
+ * (0.1 + 0.2 !== 0.3). Used by the parser, the spending-limit check, and UI.
+ */
+export const decimalUsdcToMicro = (raw: string): number | null => {
+  const s = raw.trim()
+  const m = /^(\d+)(?:\.(\d{1,6}))?$/.exec(s)
+  if (!m) {
+    return null
+  }
+  const micro =
+    Number(m[1]) * MICRO_USDC_PER_USDC +
+    Number((m[2] ?? "").padEnd(6, "0") || "0")
+  if (!Number.isSafeInteger(micro)) {
+    return null
+  }
+  return micro
+}
 
 /** intent_<32 hex>, e.g. intent_9f3c… — collision-safe for the PoC. */
 export const createIntentId = (): string =>

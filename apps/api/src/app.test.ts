@@ -7,8 +7,10 @@ import { createApp } from "./app.js"
 // valid-format dummy (system program address) — replace with a real
 // devnet wallet via .env for local runs.
 // MERCHANT_ACTIVE defaults to inactive (fail-closed): tests pin it on.
+// INTENT_SEAL_SECRET likewise: parse/validate never run unsigned in tests.
 process.env["MERCHANT_WALLET"] = "11111111111111111111111111111111"
 process.env["MERCHANT_ACTIVE"] = "true"
+process.env["INTENT_SEAL_SECRET"] = "test-seal-secret-000000000000000000000001"
 
 /** Stubbed LLM boundary: no network, deterministic model JSON. */
 const stubLlm = (reply: string) =>
@@ -156,6 +158,33 @@ describe("api skeleton (BER-129)", () => {
     expect(res.status).toBe(500)
     const body = (await res.json()) as { ok: boolean; code: string }
     expect(body.code).toBe("PARSER_ERROR")
+  })
+
+  it("POST /api/intent/parse seals output and maps missing seal secret to 500 INTERNAL_ERROR", async () => {
+    const sealed = createApp({ llmLayer: stubLlm(goodExtraction) })
+    const ok = await sealed.request("/api/intent/parse", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "Pay 5 USDC to Pact Coffee" })
+    })
+    expect(ok.status).toBe(200)
+    const okBody = (await ok.json()) as {
+      ok: boolean
+      intent: { seal?: string }
+    }
+    expect(typeof okBody.intent.seal).toBe("string")
+
+    delete process.env["INTENT_SEAL_SECRET"]
+    const bad = await sealed.request("/api/intent/parse", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "Pay 5 USDC to Pact Coffee" })
+    })
+    expect(bad.status).toBe(500)
+    const badBody = (await bad.json()) as { ok: boolean; code: string }
+    expect(badBody.code).toBe("INTERNAL_ERROR")
+    process.env["INTENT_SEAL_SECRET"] =
+      "test-seal-secret-000000000000000000000001"
   })
 
   it("POST /api/intent/parse rejects bad INTENT_TTL_SECONDS in-contract (Codex P2)", async () => {

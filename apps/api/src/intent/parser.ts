@@ -1,12 +1,13 @@
 import { Data, Effect, Schema } from "effect"
 import {
   createIntentId,
-  MICRO_USDC_PER_USDC,
+  decimalUsdcToMicro,
   PaymentIntent,
   PolicyErrorCode,
   type SolanaNetwork
 } from "@pact/shared"
 import { LlmClient, type LlmConfig } from "./llm.js"
+import { sealIntent } from "./seal.js"
 
 /**
  * BER-132 / C-002 Intent Parser + C-003 Payment Intent Service (creation half).
@@ -27,6 +28,8 @@ export interface ParserContext {
   /** Lowercase alias strings the merchant is known by. */
   merchantAliases: string[]
   ttlSeconds: number
+  /** Server-only HMAC secret for intent seals. Empty = unconfigured. */
+  sealSecret: string
   llm: LlmConfig
 }
 
@@ -54,7 +57,9 @@ export interface Clarification {
 export type ParseResult = ParsedIntent | Clarification
 
 export class ParserError extends Data.TaggedError("ParserError")<{
-  code: typeof PolicyErrorCode.PARSER_ERROR
+  code:
+    | typeof PolicyErrorCode.PARSER_ERROR
+    | typeof PolicyErrorCode.INTERNAL_ERROR
   message: string
 }> {}
 
@@ -128,19 +133,8 @@ export const merchantAliasesFor = (
   return [...new Set([merchantId.toLowerCase(), displayName.toLowerCase(), ...words])]
 }
 
-/** Exact decimal USDC string -> integer micro-USDC. Null only when malformed. */
-export const decimalUsdcToMicro = (raw: string): number | null => {
-  const s = raw.trim()
-  const m = /^(\d+)(?:\.(\d{1,6}))?$/.exec(s)
-  if (!m) {
-    return null
-  }
-  const micro = Number(m[1]) * MICRO_USDC_PER_USDC + Number((m[2] ?? "").padEnd(6, "0") || "0")
-  if (!Number.isSafeInteger(micro)) {
-    return null
-  }
-  return micro
-}
+/** decimalUsdcToMicro lives in @pact/shared (single money-math choke point). */
+export { decimalUsdcToMicro } from "@pact/shared"
 
 const SYSTEM_PROMPT = `You extract payment details from a user's request. You only extract data — you never authorize, approve, or execute payments.
 
@@ -173,7 +167,7 @@ export const toIntentProposal = (
   text: string,
   ctx: ParserContext,
   now: Date = new Date()
-): ParseResult | { _tag: "ModelError"; message: string } => {
+): ParseResult | { _tag: "ModelError"; message: string } | { _tag: "SealMisconfigured"; message: string } => {
   const decoded = Schema.decodeUnknownEither(LlmExtraction)(raw)
   if (decoded._tag === "Left") {
     return { _tag: "ModelError", message: "Model returned malformed JSON." }
@@ -262,7 +256,13 @@ export const toIntentProposal = (
   if (intent._tag === "Left") {
     return { _tag: "ModelError", message: "Proposal failed schema validation." }
   }
-  return { _tag: "Parsed", intent: intent.right }
+  if (ctx.sealSecret.trim().length === 0) {
+    return {
+      _tag: "SealMisconfigured",
+      message: "Intent sealing is not configured (INTENT_SEAL_SECRET missing)."
+    } as const
+  }
+  return { _tag: "Parsed", intent: sealIntent(intent.right, ctx.sealSecret) }
 }
 
 export const parsePaymentIntent = (
@@ -298,6 +298,12 @@ export const parsePaymentIntent = (
     if (result._tag === "ModelError") {
       return yield* new ParserError({
         code: PolicyErrorCode.PARSER_ERROR,
+        message: result.message
+      })
+    }
+    if (result._tag === "SealMisconfigured") {
+      return yield* new ParserError({
+        code: PolicyErrorCode.INTERNAL_ERROR,
         message: result.message
       })
     }

@@ -1,5 +1,9 @@
 import { Config, Effect, Schema } from "effect"
-import { MerchantConfig, SolanaNetwork } from "@pact/shared"
+import {
+  decimalUsdcToMicro,
+  MerchantConfig,
+  SolanaNetwork
+} from "@pact/shared"
 
 /**
  * Centralized, env-driven config (REQ-S-007/008, BER-129 AC#2).
@@ -78,6 +82,20 @@ const configFromEnv = Effect.gen(function*() {
   const spendingLimitUsdc = yield* Config.number("SPENDING_LIMIT_USDC").pipe(
     Config.withDefault(50)
   )
+  // Fail-fast (Qodo PR #7): a non-positive or unrepresentable limit must
+  // break config load — never surface later as a per-request 422 that
+  // looks like user error. The engine keeps its defensive check.
+  if (
+    !Number.isFinite(spendingLimitUsdc) ||
+    decimalUsdcToMicro(String(spendingLimitUsdc)) === null ||
+    (decimalUsdcToMicro(String(spendingLimitUsdc)) as number) <= 0
+  ) {
+    return yield* Effect.fail(
+      new Error(
+        "SPENDING_LIMIT_USDC must be a positive decimal with at most 6 decimals."
+      )
+    )
+  }
   // Kill-switch (BER-133): only an explicit truthy value activates the
   // merchant — including when the variable is OMITTED entirely (Codex P1:
   // an absent deployment setting must never silently enable payments).

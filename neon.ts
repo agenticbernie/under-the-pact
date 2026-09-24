@@ -39,7 +39,8 @@ export default defineConfig({
           LLM_MODEL: process.env["LLM_MODEL"] ?? "gpt-4o-mini",
           LLM_API_KEY: process.env["LLM_API_KEY"] ?? "",
           LLM_TEMPERATURE: process.env["LLM_TEMPERATURE"] ?? "",
-          INTENT_TTL_SECONDS: process.env["INTENT_TTL_SECONDS"] ?? "900"
+          INTENT_TTL_SECONDS: process.env["INTENT_TTL_SECONDS"] ?? "900",
+          INTENT_SEAL_SECRET: process.env["INTENT_SEAL_SECRET"] ?? ""
         },
         dev: { port: 8787 }
       }

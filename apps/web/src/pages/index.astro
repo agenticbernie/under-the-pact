@@ -113,8 +113,25 @@ const apiUrl = import.meta.env.PUBLIC_API_URL ?? "http://localhost:8787";
             const usdc = body.intent.amountMicroUsdc / 1_000_000;
             status.textContent =
               `Parsed: ${usdc} USDC to ${body.intent.merchantId} ` +
-              `(intent ${body.intent.intentId.slice(0, 15)}…, ${body.intent.status}). ` +
-              `Policy validation lands in BER-134/135.`;
+              `(intent ${body.intent.intentId.slice(0, 15)}…). Validating…`;
+            // BER-134/135: run deterministic validation on the parsed intent.
+            // One-line verdict only — the full summary view lands in BER-136.
+            const vres = await fetch(`${apiUrl}/api/intent/validate`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ intent: body.intent })
+            });
+            const verdict = (await vres.json()) as {
+              ok: boolean;
+              code?: string;
+              message?: string;
+              intent?: { status: string };
+            };
+            if (vres.ok && verdict.intent) {
+              status.textContent += ` Validated (${verdict.intent.status}).`;
+            } else {
+              status.textContent += ` Rejected: ${verdict.code || vres.status}.`;
+            }
           } else if (res.status === 422 && body.code === "AMBIGUOUS_REQUEST") {
             error.textContent = body.message || "Need a bit more detail.";
             if (body.missing?.length) {
