@@ -37,8 +37,8 @@ type Phase =
       signedTransaction: string;
       signer: string;
     }
-  | { state: "rejected" }
-  | { state: "error"; message: string };
+  | { state: "rejected"; built: BuiltTx }
+  | { state: "error"; built: BuiltTx; message: string };
 
 const emitSigned = (intentId: string, sender: string, signedTransaction: string) => {
   window.dispatchEvent(
@@ -178,11 +178,13 @@ export function SigningPanel() {
         // Rejection is proven by code/message — the generic
         // WalletSignTransactionError wraps ALL provider faults, so its
         // class alone never implies rejection (Qodo 6 + Codex P2).
+        // Both carry the staged build so signing can be retried (Qodo PR #15).
         if (isUserRejection(err)) {
-          setPhase({ state: "rejected" });
+          setPhase({ state: "rejected", built });
         } else {
           setPhase({
             state: "error",
+            built,
             message: err instanceof Error ? err.message.slice(0, 200) : "Signing failed.",
           });
         }
@@ -212,6 +214,19 @@ export function SigningPanel() {
   }
 
   if (phase.state === "rejected") {
+    // Retryable: the staged build is preserved (Qodo PR #15) — rejecting
+    // signs nothing, so trying again is always safe. Re-runs the live
+    // eligibility gate rather than assuming anything.
+    const retryGate = canSign({
+      intentId: phase.built.intentId,
+      expiresAt: phase.built.expiry,
+      preflightOk: preflight.ok,
+      preflightIntentId: preflight.intentId,
+      connectedPubkey: walletPubkey,
+      buildSender: phase.built.sender,
+      buildIntentId: phase.built.intentId,
+      hasUnsignedTx: true,
+    });
     return (
       <div className="card" aria-live="polite">
         <h3>5. Wallet signing (BER-141)</h3>
@@ -219,15 +234,48 @@ export function SigningPanel() {
           Rejected in wallet — no payment was made and nothing was submitted.
           Review the summary and try again, or cancel the payment.
         </p>
+        <button
+          onClick={() => {
+            generation.current++;
+            setPhase({ state: "ready", built: phase.built });
+          }}
+          disabled={!retryGate.eligible}
+        >
+          Try signing again
+        </button>
+        {!retryGate.eligible && (
+          <p className="hint">
+            Reconnect the wallet and pass preflight to retry.
+          </p>
+        )}
       </div>
     );
   }
 
   if (phase.state === "error") {
+    const retryGate = canSign({
+      intentId: phase.built.intentId,
+      expiresAt: phase.built.expiry,
+      preflightOk: preflight.ok,
+      preflightIntentId: preflight.intentId,
+      connectedPubkey: walletPubkey,
+      buildSender: phase.built.sender,
+      buildIntentId: phase.built.intentId,
+      hasUnsignedTx: true,
+    });
     return (
       <div className="card" aria-live="polite">
         <h3>5. Wallet signing (BER-141)</h3>
         <p role="alert">Signing failed: {phase.message}</p>
+        <button
+          onClick={() => {
+            generation.current++;
+            setPhase({ state: "ready", built: phase.built });
+          }}
+          disabled={!retryGate.eligible}
+        >
+          Try signing again
+        </button>
       </div>
     );
   }

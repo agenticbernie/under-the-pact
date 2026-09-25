@@ -252,6 +252,25 @@ describe("verifySignedTransfer (Qodo 1 + Codex P1 PR #14)", () => {
     expect(exit._tag).toBe("Success")
   })
 
+  it("rejects truncated instruction data instead of throwing (Qodo PR #15)", async () => {
+    const kp = Keypair.generate()
+    const short = new Transaction()
+    short.feePayer = kp.publicKey
+    short.recentBlockhash = BLOCKHASH
+    // Opcode 12 present, payload truncated to 3 bytes.
+    short.add({
+      keys: [],
+      programId: TOKEN_PROGRAM_ID,
+      data: Buffer.from([12, 1, 2]),
+    })
+    short.partialSign(kp)
+    expect(
+      await verifyCode(
+        Buffer.from(short.serialize()).toString("base64")
+      )
+    ).toBe("INVALID_REQUEST")
+  })
+
   it("rejects wrong amount, foreign program, unsigned, and wrong signer", async () => {
     // Wrong amount for this intent.
     const wrongAmount = await signBuilt(1)
@@ -305,8 +324,7 @@ describe("verifySignedTransfer (Qodo 1 + Codex P1 PR #14)", () => {
   })
 })
 
-describe("backend cluster guard on build (Codex P1 PR #14)", () => {
-  it("refuses to build against the wrong cluster", async () => {
+describe("backend cluster guard on build (Codex P1 PR #14)", () => {  it("refuses to build against the wrong cluster", async () => {
     const exit = await Effect.runPromiseExit(
       buildUsdcTransfer({
         intent: confirmedIntent(),

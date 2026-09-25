@@ -342,3 +342,14 @@ warning; failures keep retry available.
   and generation-guards intent + sender on every response.
 - Durable Postgres for lifecycle + attempts arrives in Sprint 3
   (BER-145/146); LIFECYCLE_STORE already selects the backend.
+
+## Integration review hardening (PR #15, Qodo)
+
+- Rejected/failed signing preserves the staged build with a gated retry
+  button (no more restart-the-payment dead ends).
+- verifySignedTransfer requires the exact ten-byte TransferChecked
+  payload (truncated data is INVALID_REQUEST, never a RangeError defect).
+- Durable Postgres for lifecycle + attempts stays Sprint 3 scope
+  (BER-145/146): no live Neon project exists yet, so an untestable
+  adapter would be worse than the explicit LIFECYCLE_STORE seam; local
+  single-process demo is unaffected.

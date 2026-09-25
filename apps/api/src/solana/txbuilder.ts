@@ -348,10 +348,13 @@ export const verifySignedTransfer = (
       )
     }
     const data = Buffer.from(ix.data)
-    if (data[0] !== 12) {
+    // Exact ten-byte payload required (Qodo PR #15): reading amount/decimals
+    // from truncated data throws RangeError defects that bypass the typed
+    // INVALID_REQUEST path.
+    if (data[0] !== 12 || data.length !== 10) {
       return yield* fail(
         PolicyErrorCode.INVALID_REQUEST,
-        "Transaction instruction is not a checked token transfer."
+        "Transaction instruction is not a well-formed checked token transfer."
       )
     }
     const amount = Number(data.readBigUInt64LE(1))
