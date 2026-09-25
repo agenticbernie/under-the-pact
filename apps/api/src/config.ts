@@ -33,7 +33,7 @@ const NETWORK_DEFAULTS: Record<
 > = {
   devnet: {
     rpcUrl: "https://api.devnet.solana.com",
-    usdcMint: "4zMMC9sEqf9MKyRbf3Tx3sQAr1BLWnCQcHjEXtGbm4o"
+    usdcMint: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
   },
   testnet: {
     rpcUrl: "https://api.testnet.solana.com",

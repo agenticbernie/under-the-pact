@@ -13,7 +13,7 @@ import {
 } from "./engine.js"
 
 const DUMMY_WALLET = "11111111111111111111111111111111"
-const DEVNET_MINT = "4zMMC9sEqf9MKyRbf3Tx3sQAr1BLWnCQcHjEXtGbm4o"
+const DEVNET_MINT = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
 const NOW = new Date("2030-01-01T00:00:00.000Z")
 
 const merchant: MerchantConfig = {

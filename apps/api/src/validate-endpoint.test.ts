@@ -66,7 +66,7 @@ describe("POST /api/intent/validate", () => {
       [{ merchantId: "starbucks" }, "UNKNOWN_MERCHANT"],
       [{ amountMicroUsdc: 51_000_000 }, "OVER_LIMIT"],
       [{ expiry: "2020-01-01T00:00:00.000Z" }, "EXPIRED"],
-      [{ recipient: "4zMMC9sEqf9MKyRbf3Tx3sQAr1BLWnCQcHjEXtGbm4o" }, "RECIPIENT_MISMATCH"]
+      [{ recipient: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU" }, "RECIPIENT_MISMATCH"]
     ]
     for (const [patch, code] of cases) {
       // Re-seal after patching: seal covers the new values, policy rejects.

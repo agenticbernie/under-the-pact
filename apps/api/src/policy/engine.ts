@@ -18,8 +18,8 @@ import {
  *  1. UNKNOWN_MERCHANT — id mismatch or inactive merchant (134)
  *  2. WRONG_NETWORK   — intent network != merchant network (134)
  *  3. WRONG_MINT      — tokenMint != configured mint (token is schema-USDC) (134)
- *  4. NOT_VALIDATED   — only PARSED or VALIDATED intents enter validation:
- *     fresh parses, plus re-validation at confirmation time (137 gate)
+ *  4. NOT_VALIDATED   — only PARSED / VALIDATED / CONFIRMED intents enter:
+ *     fresh parses, re-validation, and build-time re-checks (137 + 140 gates)
  *  5. EXPIRED         — expiry <= now; expired never reaches confirmation (135)
  *  6. INVALID_AMOUNT  — defensive: schema already guarantees positive int (135)
  *  7. RECIPIENT_MISMATCH — recipient != registered merchant wallet (135)
@@ -34,6 +34,7 @@ export class PolicyError extends Data.TaggedError("PolicyError")<{
     | typeof PolicyErrorCode.WRONG_MINT
     | typeof PolicyErrorCode.NOT_VALIDATED
     | typeof PolicyErrorCode.CONFIRMATION_REQUIRED
+    | typeof PolicyErrorCode.MERCHANT_ATA_MISSING
     | typeof PolicyErrorCode.DUPLICATE_INTENT
     | typeof PolicyErrorCode.EXPIRED
     | typeof PolicyErrorCode.INVALID_AMOUNT
@@ -48,7 +49,9 @@ export interface PolicyContext {
   merchant: MerchantConfig
 }
 
-export type ValidatedIntent = PaymentIntent & { status: "VALIDATED" }
+export type ValidatedIntent = PaymentIntent & {
+  status: "VALIDATED" | "CONFIRMED"
+}
 
 const fail = (
   code: PolicyError["code"],
@@ -84,14 +87,17 @@ export const validateIntent = (
       )
     }
 
-    // Only PARSED intents enter validation fresh, plus VALIDATED ones for
-    // re-validation at confirmation time (BER-137 re-runs policy with a
-    // fresh clock so expiry between validate and confirm is caught).
-    // Nothing else — especially CONFIRMED/CANCELLED — is consumable here.
-    if (intent.status !== "PARSED" && intent.status !== "VALIDATED") {
+    // PARSED enters fresh; VALIDATED re-validates; CONFIRMED re-checks at
+    // build time (BER-140: config may have changed since confirmation).
+    // Nothing else — especially CANCELLED — is consumable here.
+    if (
+      intent.status !== "PARSED" &&
+      intent.status !== "VALIDATED" &&
+      intent.status !== "CONFIRMED"
+    ) {
       return yield* fail(
         PolicyErrorCode.NOT_VALIDATED,
-        `Intent status ${intent.status} cannot enter validation; expected PARSED or VALIDATED.`
+        `Intent status ${intent.status} cannot enter validation; expected PARSED, VALIDATED, or CONFIRMED.`
       )
     }
 
@@ -130,9 +136,12 @@ export const validateIntent = (
       )
     }
 
+    // Preserve CONFIRMED on build-time re-checks (BER-140): the status is
+    // lifecycle position, and re-validation must not move it backwards.
+    // Fresh PARSED intents graduate to VALIDATED here.
     return {
       ...intent,
-      status: "VALIDATED",
+      status: intent.status === "PARSED" ? "VALIDATED" : intent.status,
       updatedAt: now.toISOString()
     } as ValidatedIntent
   })

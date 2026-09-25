@@ -28,6 +28,8 @@ import {
   lifecycleMemoryLayer
 } from "./policy/lifecycle.js"
 import { validateIntent } from "./policy/engine.js"
+import { assertConfirmed } from "./intent/confirm.js"
+import { buildUsdcTransfer, type SolanaReads } from "./solana/txbuilder.js"
 
 /**
  * Hono skeleton (BER-129).
@@ -41,6 +43,8 @@ export interface AppOptions {
   llmLayer?: Layer.Layer<LlmClient>
   /** Override the lifecycle store in tests — one fresh store per app. */
   lifecycleLayer?: Layer.Layer<LifecycleStore>
+  /** Override Solana reads in tests — production reads live RPC. */
+  solanaReads?: SolanaReads
 }
 
 export const createApp = (opts: AppOptions = {}) => {
@@ -497,6 +501,153 @@ export const createApp = (opts: AppOptions = {}) => {
     })
     const out = await Effect.runPromise(
       program.pipe(Effect.provide(PactConfigLive), Effect.provide(lifecycle))
+    )
+    if (out.status === 200) {
+      return c.json(out.body, 200)
+    }
+    if (out.status === 422) {
+      return c.json(out.body, 422)
+    }
+    if (out.status === 400) {
+      return c.json(out.body, 400)
+    }
+    return c.json(out.body, 500)
+  })
+
+  // BER-140: deterministic USDC transfer construction (C-009).
+  // Trust chain: schema decode -> seal verify -> execution gate
+  // (sealed CONFIRMED snapshot, unexpired) -> fresh policy re-run ->
+  // build from intent + merchant config. Returns an UNSIGNED transaction
+  // for the wallet to sign (BER-141); nothing here signs or broadcasts.
+  app.post("/api/tx/build", async (c) => {
+    let body: unknown
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json(
+        {
+          ok: false,
+          code: PolicyErrorCode.INVALID_REQUEST,
+          message: "Request body must be JSON with 'intent' and 'sender'."
+        },
+        400
+      )
+    }
+    const raw =
+      typeof body === "object" && body !== null
+        ? (body as { intent?: unknown; sender?: unknown })
+        : {}
+    const shaped = Schema.decodeUnknownEither(PaymentIntent)(raw.intent)
+    if (shaped._tag === "Left" || typeof raw.sender !== "string") {
+      return c.json(
+        {
+          ok: false,
+          code: PolicyErrorCode.INVALID_REQUEST,
+          message: "Body must carry a canonical 'intent' and a 'sender' address."
+        },
+        400
+      )
+    }
+    const program = Effect.gen(function* () {
+      const cfg = yield* PactConfigService
+      const sealSecret = yield* Config.string("INTENT_SEAL_SECRET").pipe(
+        Config.withDefault("")
+      )
+      // Gate first: only the current sealed CONFIRMED snapshot builds.
+      const gated = yield* assertConfirmed(
+        shaped.right,
+        sealSecret
+      ).pipe(
+        Effect.map((intent) => ({ _tag: "Gated", intent }) as const),
+        Effect.catchAll((error) =>
+          Effect.succeed({ _tag: "Rejected", error } as const)
+        )
+      )
+      if (gated._tag === "Rejected") {
+        // Forged input is a 400 (consistent with /validate and /confirm);
+        // misconfiguration is a logged 500; policy verdicts are 422.
+        const status =
+          gated.error.code === PolicyErrorCode.INTERNAL_ERROR
+            ? 500
+            : gated.error.code === PolicyErrorCode.INVALID_REQUEST
+              ? 400
+              : 422
+        if (status === 500) {
+          console.error("[pact-api] build gate failed:", gated.error.message)
+        }
+        return {
+          status,
+          body: {
+            ok: false,
+            code: gated.error.code,
+            message: gated.error.message
+          }
+        } as const
+      }
+      // Fresh policy re-run: config may have changed since confirmation.
+      const rechecked = yield* validateIntent(gated.intent, {
+        merchant: cfg.merchant
+      }).pipe(
+        Effect.map((intent) => ({ _tag: "Clean", intent }) as const),
+        Effect.catchAll((error) =>
+          Effect.succeed({ _tag: "Rejected", error } as const)
+        )
+      )
+      if (rechecked._tag === "Rejected") {
+        const status =
+          rechecked.error.code === PolicyErrorCode.INTERNAL_ERROR ? 500 : 422
+        if (status === 500) {
+          console.error(
+            "[pact-api] build recheck failed:",
+            rechecked.error.message
+          )
+        }
+        return {
+          status,
+          body: {
+            ok: false,
+            code: rechecked.error.code,
+            message: rechecked.error.message
+          }
+        } as const
+      }
+      const built = yield* buildUsdcTransfer({
+        intent: { ...rechecked.intent, status: "CONFIRMED" as const },
+        sender: raw.sender as string,
+        merchant: cfg.merchant,
+        rpcUrl: cfg.solanaRpcUrl,
+        reads: opts.solanaReads
+      }).pipe(
+        Effect.map((tx) => ({ _tag: "Built", tx }) as const),
+        Effect.catchAll((error) =>
+          Effect.succeed({ _tag: "Rejected", error } as const)
+        )
+      )
+      if (built._tag === "Rejected") {
+        const status =
+          built.error.code === PolicyErrorCode.INTERNAL_ERROR ? 500 : 422
+        if (status === 500) {
+          console.error("[pact-api] build failed:", built.error.message)
+        }
+        return {
+          status,
+          body: {
+            ok: false,
+            code: built.error.code,
+            message: built.error.message
+          }
+        } as const
+      }
+      return {
+        status: 200,
+        body: { ok: true, transaction: built.tx }
+      } as const
+    })
+    const out = await Effect.runPromise(
+      program.pipe(
+        Effect.provide(PactConfigLive),
+        Effect.provide(lifecycle)
+      )
     )
     if (out.status === 200) {
       return c.json(out.body, 200)

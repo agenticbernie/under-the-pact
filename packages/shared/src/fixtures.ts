@@ -9,7 +9,7 @@
  */
 
 const DUMMY_WALLET = "11111111111111111111111111111111"
-const DEVNET_USDC_MINT = "4zMMC9sEqf9MKyRbf3Tx3sQAr1BLWnCQcHjEXtGbm4o"
+const DEVNET_USDC_MINT = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
 
 const baseValidIntent = {
   intentId: "intent_9f3c2ab41d5e4789a6b7c8d9e0f1a2b3",
