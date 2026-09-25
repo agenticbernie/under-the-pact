@@ -196,8 +196,8 @@ no transaction construction anywhere in the codebase (Sprint Gate).
 - BER-133 merchant registry ✅: single-merchant module + kill-switch.
 - BER-134/135 policy engine ✅ (this branch): deterministic validation +
   stable codes + validate endpoint.
-- BER-136 summary view ✅ (this branch): validated-only summary + risk info.
-- BER-137 confirmation ✅ (this branch): seal/policy-gated boundary +
+- BER-136 summary view ✅: validated-only summary + risk info.
+- BER-137 confirmation ✅: seal/policy-gated boundary +
   CONFIRMED/CANCELLED + events + Sprint 2 execution gate.
 
 Replay note (Qodo PR #8): decisions consume a server-side lifecycle
@@ -207,4 +207,16 @@ states are sticky across re-validation, and the execution gate checks
 the stored CONFIRMED snapshot instead of trusting client copies. The
 Sprint 1 adapter is per app instance/isolate; Sprint 3 (BER-145/146)
 swaps in Postgres with no changes to confirm.ts/app.ts.
-- Sprint 2: wallet adapter, preflight, tx build/sign/submit.
+
+## Sprint 2 kickoff — Controlled Solana USDC Payment (BER-128)
+
+Scope: wallet connection → network/balance preflight → USDC transfer
+build from CONFIRMED intents only → user wallet signing → submission →
+signature capture. Issues: BER-138 wallet adapter, BER-139 preflight,
+BER-140 tx build, BER-141 signing flow, BER-142 submit.
+
+Exit: one real USDC payment submittable on Solana devnet from an
+approved intent. Standing rules carry over: confirmation-first (nothing
+builds without a sealed CONFIRMED intent via assertConfirmed), no
+private-key custody, deterministic code owns policy, Solana is the
+source of truth for execution.
