@@ -221,7 +221,6 @@ private-key custody, deterministic code owns policy, Solana is the
 source of truth for execution.
 
 ## Wallet adapter (BER-138, C-007)
-
 One supported wallet (Phantom) via `@solana/wallet-adapter-react` in a
 `client:only` island (`apps/web/src/components/`). Connection states
 (disconnected/connecting/connected), address display, and explicit
@@ -236,3 +235,19 @@ override blocks the wallet UI — real-money risk), and backend-network
 verification is an explicit loading/verified/error tri-state (failures
 show an alert, never a silent match). Disconnecting an unsupported
 wallet also clears the adapter selection so the chooser reopens.
+
+## Preflight checks (BER-139, C-008)
+
+Client-side reads after CONFIRMED (`PreflightPanel` island, listening for
+`pact:confirmed`): wallet connected, cluster genesis match, SOL fee
+reserve (>= 0.005), USDC token account + balance vs the approved amount.
+Authority order: the sealed intent's network governs (frontend/backend
+disagreement fails explicitly); genesis mismatches block; probe and RPC
+failures report RPC_UNREACHABLE, never WRONG_NETWORK/NO_USDC_ACCOUNT
+(confirmed absence via getAccountInfo is the only path to NO_USDC_ACCOUNT).
+Stale runs are discarded by generation guard and every result carries the
+intent ID; disconnect revokes, account switch reruns, and a Re-check
+button retries the stored intent. Stable codes (WALLET_NOT_CONNECTED, WRONG_NETWORK,
+RPC_UNREACHABLE, INSUFFICIENT_SOL, NO_USDC_ACCOUNT, INSUFFICIENT_USDC)
+with actionable messages; failed preflight blocks signing (BER-141 gates
+on it). Pure reads only — nothing here can create a transaction.

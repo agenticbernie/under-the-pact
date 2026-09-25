@@ -12,6 +12,7 @@ import {
   type SolanaNetworkName,
 } from "../lib/wallet.js";
 import { WalletProviders } from "./WalletProviders.js";
+import { PreflightPanel } from "./PreflightPanel.js";
 
 /**
  * BER-138: connection panel (mounted client:only — wallets need window).
@@ -198,6 +199,7 @@ export function WalletRoot({
   return (
     <WalletProviders endpoint={endpoint}>
       <Panel apiUrl={apiUrl} network={network} endpoint={endpoint} />
+      <PreflightPanel network={network} />
     </WalletProviders>
   );
 }
