@@ -209,7 +209,6 @@ Sprint 1 adapter is per app instance/isolate; Sprint 3 (BER-145/146)
 swaps in Postgres with no changes to confirm.ts/app.ts.
 
 ## Sprint 2 kickoff — Controlled Solana USDC Payment (BER-128)
-
 Scope: wallet connection → network/balance preflight → USDC transfer
 build from CONFIRMED intents only → user wallet signing → submission →
 signature capture. Issues: BER-138 wallet adapter, BER-139 preflight,
@@ -220,3 +219,15 @@ approved intent. Standing rules carry over: confirmation-first (nothing
 builds without a sealed CONFIRMED intent via assertConfirmed), no
 private-key custody, deterministic code owns policy, Solana is the
 source of truth for execution.
+
+## Wallet adapter (BER-138, C-007)
+
+One supported wallet (Phantom) via `@solana/wallet-adapter-react` in a
+`client:only` island (`apps/web/src/components/`). Connection states
+(disconnected/connecting/connected), address display, and explicit
+unsupported-wallet/network/mismatch states; no signing calls here
+(signing is BER-141). Keys never leave the wallet by construction.
+Frontend network comes from `PUBLIC_SOLANA_NETWORK` (+ optional
+`PUBLIC_SOLANA_RPC_URL` override) and is cross-checked against the
+backend policy network from `/api/merchant` — both must match devnet
+for the PoC demo.
