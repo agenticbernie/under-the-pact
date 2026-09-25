@@ -147,6 +147,8 @@ const solanaRpc = import.meta.env.PUBLIC_SOLANA_RPC_URL ?? "";
         currentIntent = null;
         confirmResult.textContent = "";
         summaryCard.hidden = true;
+        // Retire any preflight tied to the old summary (BER-139).
+        window.dispatchEvent(new Event("pact:reset"));
       }
 
       async function decide(decision: "confirm" | "cancel") {
@@ -182,8 +184,11 @@ const solanaRpc = import.meta.env.PUBLIC_SOLANA_RPC_URL ?? "";
               // Sprint exit: awaiting explicit wallet signing (Sprint 2).
               // No transaction exists — nothing here can create or sign one.
               confirmResult.textContent =
-                `Confirmed (${body.intent.status}). Awaiting wallet signature in Sprint 2 — ` +
-                `no transaction has been created.`;
+                `Confirmed (${body.intent.status}). Running preflight checks…`;
+              // Hand the sealed CONFIRMED intent to preflight (BER-139).
+              window.dispatchEvent(
+                new CustomEvent("pact:confirmed", { detail: body.intent })
+              );
             } else {
               // Cancelled: terminal. No transaction was or will be created.
               confirmResult.textContent =
