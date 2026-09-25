@@ -241,8 +241,13 @@ wallet also clears the adapter selection so the chooser reopens.
 Client-side reads after CONFIRMED (`PreflightPanel` island, listening for
 `pact:confirmed`): wallet connected, cluster genesis match, SOL fee
 reserve (>= 0.005), USDC token account + balance vs the approved amount.
-Mint and amount come from the validated intent itself — the same values
-policy approved. Stable codes (WALLET_NOT_CONNECTED, WRONG_NETWORK,
+Authority order: the sealed intent's network governs (frontend/backend
+disagreement fails explicitly); genesis mismatches block; probe and RPC
+failures report RPC_UNREACHABLE, never WRONG_NETWORK/NO_USDC_ACCOUNT
+(confirmed absence via getAccountInfo is the only path to NO_USDC_ACCOUNT).
+Stale runs are discarded by generation guard and every result carries the
+intent ID; disconnect revokes, account switch reruns, and a Re-check
+button retries the stored intent. Stable codes (WALLET_NOT_CONNECTED, WRONG_NETWORK,
 RPC_UNREACHABLE, INSUFFICIENT_SOL, NO_USDC_ACCOUNT, INSUFFICIENT_USDC)
 with actionable messages; failed preflight blocks signing (BER-141 gates
 on it). Pure reads only — nothing here can create a transaction.

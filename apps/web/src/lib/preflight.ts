@@ -1,11 +1,17 @@
+import type { SolanaNetworkName } from "./wallet.js";
+
 /**
  * BER-139 / C-008: wallet/network/balance preflight (pure logic).
  *
  * Runs client-side before any signing step: failed preflight prevents
  * transaction creation and signing. These checks are UX/cost gates —
  * deterministic server policy (BER-134/135) and wallet signing remain
- * the trust boundaries. Pure function of fetched balances: fully tested
+ * the trust boundaries. Pure function of fetched data: fully tested
  * without RPC. Creates no transactions (reads only).
+ *
+ * Failure taxonomy (Qodo/Codex PR #11): unknown is never misreported —
+ * an unverified network or a failed RPC read yields RPC_UNREACHABLE
+ * (retry guidance), never WRONG_NETWORK / NO_USDC_ACCOUNT.
  */
 
 export const MIN_SOL_LAMPORTS = 5_000_000; // 0.005 SOL: fees + ATA-rent buffer
@@ -19,19 +25,26 @@ export type PreflightCode =
   | "NO_USDC_ACCOUNT"
   | "INSUFFICIENT_USDC";
 
+/** Wallet cluster vs the policy-approved intent network. */
+export type NetworkCheck =
+  | { status: "matched" }
+  | { status: "mismatched" }
+  | { status: "unknown" };
+
 export interface PreflightBalances {
-  /** null when the RPC read failed. */
+  /** null when the SOL read failed (pairs with rpcFailed). */
   solLamports: number | null;
-  /** null when no USDC associated token account exists (or read failed). */
+  /** null unless a confirmed balance was read. */
   usdcMicro: number | null;
+  /** true ONLY when getAccountInfo returned null (confirmed absence). */
   usdcAccountMissing: boolean;
+  /** true when any transport/RPC read failed. */
+  rpcFailed: boolean;
 }
 
 export interface PreflightInput {
   connected: boolean;
-  /** Wallet cluster alignment already verified (genesis probe). */
-  networkOk: boolean;
-  /** Balances were actually read (vs RPC failure / account missing). */
+  networkCheck: NetworkCheck;
   balances: PreflightBalances | null;
   amountMicroUsdc: number;
 }
@@ -45,6 +58,27 @@ export type PreflightResult = { ok: true } | { ok: false; issues: PreflightIssue
 
 export const formatSol = (lamports: number): string =>
   (lamports / LAMPORTS_PER_SOL).toFixed(4);
+
+/**
+ * Which network governs this run: always the policy-approved intent
+ * network, never frontend config alone. Frontend/backend disagreement or
+ * an unsupported intent network fails explicitly (Qodo 1 + Codex P1).
+ */
+export const resolveRunNetwork = (
+  intentNetwork: string,
+  frontendNetwork: string
+):
+  | { ok: true; network: SolanaNetworkName }
+  | { ok: false; reason: "unsupported-intent" | "config-mismatch" } => {
+  const known: SolanaNetworkName[] = ["devnet", "testnet", "mainnet-beta"];
+  if (!(known as string[]).includes(intentNetwork)) {
+    return { ok: false, reason: "unsupported-intent" };
+  }
+  if (frontendNetwork !== intentNetwork) {
+    return { ok: false, reason: "config-mismatch" };
+  }
+  return { ok: true, network: intentNetwork as SolanaNetworkName };
+};
 
 export const evaluatePreflight = (input: PreflightInput): PreflightResult => {
   const issues: PreflightIssue[] = [];
@@ -60,13 +94,21 @@ export const evaluatePreflight = (input: PreflightInput): PreflightResult => {
       ],
     };
   }
-  if (!input.networkOk) {
+
+  if (input.networkCheck.status === "mismatched") {
     issues.push({
       code: "WRONG_NETWORK",
       message:
-        "Wallet network does not match the payment network — switch Phantom to the selected cluster and retry.",
+        "Wallet cluster does not match the approved payment network — switch Phantom to the selected cluster and retry.",
+    });
+  } else if (input.networkCheck.status === "unknown") {
+    issues.push({
+      code: "RPC_UNREACHABLE",
+      message:
+        "Could not verify the wallet network — the endpoint did not answer. Retry before paying.",
     });
   }
+
   if (input.balances === null) {
     issues.push({
       code: "RPC_UNREACHABLE",
@@ -76,7 +118,21 @@ export const evaluatePreflight = (input: PreflightInput): PreflightResult => {
     return { ok: false, issues };
   }
 
-  const { solLamports, usdcMicro, usdcAccountMissing } = input.balances;
+  const { solLamports, usdcMicro, usdcAccountMissing, rpcFailed } =
+    input.balances;
+  if (rpcFailed) {
+    // A failed read is unknown, never insufficient: report retry guidance
+    // once and skip amount judgments that would misblame balances.
+    if (!issues.some((i) => i.code === "RPC_UNREACHABLE")) {
+      issues.push({
+        code: "RPC_UNREACHABLE",
+        message:
+          "A balance read failed — retry. Balances are unknown, not insufficient.",
+      });
+    }
+    return { ok: false, issues };
+  }
+
   if (solLamports === null || solLamports < MIN_SOL_LAMPORTS) {
     issues.push({
       code: "INSUFFICIENT_SOL",
@@ -85,13 +141,13 @@ export const evaluatePreflight = (input: PreflightInput): PreflightResult => {
       }. Faucet devnet SOL and retry.`,
     });
   }
-  if (usdcAccountMissing || usdcMicro === null) {
+  if (usdcAccountMissing) {
     issues.push({
       code: "NO_USDC_ACCOUNT",
       message:
         "No USDC token account found for this wallet — receive devnet USDC first (faucet), then retry.",
     });
-  } else if (usdcMicro < input.amountMicroUsdc) {
+  } else if (usdcMicro === null || usdcMicro < input.amountMicroUsdc) {
     issues.push({
       code: "INSUFFICIENT_USDC",
       message: "USDC balance is below the payment amount — top up and retry.",

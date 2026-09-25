@@ -2,14 +2,30 @@ import { describe, expect, it } from "vitest";
 import {
   evaluatePreflight,
   MIN_SOL_LAMPORTS,
+  resolveRunNetwork,
   type PreflightInput,
 } from "./preflight.js";
 
+const balances = {
+  solLamports: 10_000_000,
+  usdcMicro: 10_000_000,
+  usdcAccountMissing: false,
+  rpcFailed: false,
+} as const;
+
 const base: PreflightInput = {
   connected: true,
-  networkOk: true,
-  balances: { solLamports: 10_000_000, usdcMicro: 10_000_000, usdcAccountMissing: false },
+  networkCheck: { status: "matched" },
+  balances: { ...balances },
   amountMicroUsdc: 5_000_000,
+};
+
+const codesOf = (input: PreflightInput): string[] | "OK" => {
+  const result = evaluatePreflight(input);
+  if (result.ok) {
+    return "OK";
+  }
+  return result.issues.map((i) => i.code);
 };
 
 describe("preflight evaluation (BER-139)", () => {
@@ -18,76 +34,96 @@ describe("preflight evaluation (BER-139)", () => {
   });
 
   it("requires a connected wallet first", () => {
-    const result = evaluatePreflight({ ...base, connected: false });
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.issues.map((i) => i.code)).toEqual(["WALLET_NOT_CONNECTED"]);
-    }
+    expect(codesOf({ ...base, connected: false })).toEqual([
+      "WALLET_NOT_CONNECTED",
+    ]);
   });
 
-  it("detects wrong network", () => {
-    const result = evaluatePreflight({ ...base, networkOk: false });
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.issues.some((i) => i.code === "WRONG_NETWORK")).toBe(true);
-    }
+  it("emits WRONG_NETWORK only on a verified mismatch", () => {
+    expect(
+      codesOf({ ...base, networkCheck: { status: "mismatched" } })
+    ).toContain("WRONG_NETWORK");
   });
 
-  it("detects unreachable RPC without blaming balances", () => {
-    const result = evaluatePreflight({ ...base, balances: null });
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.issues.map((i) => i.code)).toEqual(["RPC_UNREACHABLE"]);
-    }
+  it("emits RPC_UNREACHABLE (not WRONG_NETWORK) on unknown network", () => {
+    const codes = codesOf({ ...base, networkCheck: { status: "unknown" } });
+    expect(codes).toContain("RPC_UNREACHABLE");
+    expect(codes).not.toContain("WRONG_NETWORK");
+  });
+
+  it("detects null balances as RPC failure", () => {
+    expect(codesOf({ ...base, balances: null })).toEqual(["RPC_UNREACHABLE"]);
+  });
+
+  it("rpcFailed suppresses amount judgments (unknown, not insufficient)", () => {
+    const codes = codesOf({
+      ...base,
+      balances: { solLamports: null, usdcMicro: null, usdcAccountMissing: false, rpcFailed: true },
+    });
+    expect(codes).toEqual(["RPC_UNREACHABLE"]);
   });
 
   it("detects insufficient SOL at the exact boundary", () => {
-    const exact = evaluatePreflight({
-      ...base,
-      balances: { ...base.balances!, solLamports: MIN_SOL_LAMPORTS, usdcMicro: 10_000_000, usdcAccountMissing: false },
-    });
-    expect(exact.ok).toBe(true);
-    const short = evaluatePreflight({
-      ...base,
-      balances: { ...base.balances!, solLamports: MIN_SOL_LAMPORTS - 1, usdcMicro: 10_000_000, usdcAccountMissing: false },
-    });
-    expect(short.ok).toBe(false);
-    if (!short.ok) {
-      expect(short.issues.some((i) => i.code === "INSUFFICIENT_SOL")).toBe(true);
-    }
+    expect(
+      codesOf({
+        ...base,
+        balances: { ...balances, solLamports: MIN_SOL_LAMPORTS },
+      })
+    ).toBe("OK");
+    expect(
+      codesOf({
+        ...base,
+        balances: { ...balances, solLamports: MIN_SOL_LAMPORTS - 1 },
+      })
+    ).toContain("INSUFFICIENT_SOL");
   });
 
-  it("detects missing USDC account and insufficient USDC", () => {
-    const missing = evaluatePreflight({
-      ...base,
-      balances: { solLamports: 10_000_000, usdcMicro: null, usdcAccountMissing: true },
-    });
-    expect(missing.ok).toBe(false);
-    if (!missing.ok) {
-      expect(missing.issues.map((i) => i.code)).toEqual(["NO_USDC_ACCOUNT"]);
-    }
-    const short = evaluatePreflight({
-      ...base,
-      balances: { solLamports: 10_000_000, usdcMicro: 4_999_999, usdcAccountMissing: false },
-    });
-    expect(short.ok).toBe(false);
-    if (!short.ok) {
-      expect(short.issues.some((i) => i.code === "INSUFFICIENT_USDC")).toBe(true);
-    }
+  it("detects confirmed-missing vs insufficient USDC", () => {
+    expect(
+      codesOf({
+        ...base,
+        balances: { ...balances, usdcMicro: null, usdcAccountMissing: true },
+      })
+    ).toEqual(["NO_USDC_ACCOUNT"]);
+    expect(
+      codesOf({
+        ...base,
+        balances: { ...balances, usdcMicro: 4_999_999 },
+      })
+    ).toContain("INSUFFICIENT_USDC");
   });
 
   it("collects independent issues together", () => {
-    const result = evaluatePreflight({
+    const codes = codesOf({
       ...base,
-      networkOk: false,
-      balances: { solLamports: 0, usdcMicro: null, usdcAccountMissing: true },
+      networkCheck: { status: "mismatched" },
+      balances: { solLamports: 0, usdcMicro: null, usdcAccountMissing: true, rpcFailed: false },
     });
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      const codes = result.issues.map((i) => i.code);
-      expect(codes).toContain("WRONG_NETWORK");
-      expect(codes).toContain("INSUFFICIENT_SOL");
-      expect(codes).toContain("NO_USDC_ACCOUNT");
-    }
+    expect(codes).toContain("WRONG_NETWORK");
+    expect(codes).toContain("INSUFFICIENT_SOL");
+    expect(codes).toContain("NO_USDC_ACCOUNT");
+  });
+});
+
+describe("resolveRunNetwork (Qodo 1 + Codex P1)", () => {
+  it("uses the approved intent network when configs agree", () => {
+    expect(resolveRunNetwork("devnet", "devnet")).toEqual({
+      ok: true,
+      network: "devnet",
+    });
+  });
+
+  it("fails on unsupported intent networks", () => {
+    expect(resolveRunNetwork("mainnet", "mainnet")).toEqual({
+      ok: false,
+      reason: "unsupported-intent",
+    });
+  });
+
+  it("fails when frontend config disagrees with the intent", () => {
+    expect(resolveRunNetwork("devnet", "mainnet-beta")).toEqual({
+      ok: false,
+      reason: "config-mismatch",
+    });
   });
 });
