@@ -281,13 +281,15 @@ const solanaRpc = import.meta.env.PUBLIC_SOLANA_RPC_URL ?? "";
               note.textContent =
                 "Unsigned transaction built — inspect it above, then sign in your wallet below. Nothing is submitted.";
               buildResult.appendChild(note);
-              // Hand the unsigned build to the signing flow (BER-141).
+              // Hand the unsigned build to the signing flow (BER-141),
+              // carrying the intent expiry so signing past it is blocked.
               window.dispatchEvent(
                 new CustomEvent("pact:built", {
                   detail: {
                     intentId: sentIntentId,
                     sender: sentSender,
                     transaction: body.transaction.transaction,
+                    expiry: confirmedIntent?.expiry ?? null,
                   },
                 })
               );
