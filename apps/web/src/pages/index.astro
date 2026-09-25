@@ -18,6 +18,14 @@ const apiUrl = import.meta.env.PUBLIC_API_URL ?? "http://localhost:8787";
       #req-error { color: #a00; min-height: 1.5em; }
       #req-status { min-height: 1.5em; }
       .hint { color: #666; font-size: 0.9em; }
+      dl.summary { display: grid; grid-template-columns: 130px 1fr; gap: 6px 12px; margin: 12px 0; }
+      dl.summary dt { color: #666; }
+      dl.summary dd { margin: 0; overflow-wrap: anywhere; }
+      .risk { background: #fff8e6; border: 1px solid #e6c200; border-radius: 8px; padding: 12px; margin: 12px 0; }
+      .row { display: flex; gap: 12px; margin-top: 12px; }
+      button.secondary { background: #fff; color: #111; }
+      #summary-card[hidden] { display: none; }
+      #confirm-result { font-weight: 600; min-height: 1.5em; }
     </style>
   </head>
   <body>
@@ -40,6 +48,25 @@ const apiUrl = import.meta.env.PUBLIC_API_URL ?? "http://localhost:8787";
       <div id="req-error" role="alert"></div>
       <div id="req-status" aria-live="polite"></div>
     </div>
+    <div class="card" id="summary-card" hidden>
+      <h3>2. Payment summary — review before you confirm (BER-136)</h3>
+      <p class="hint">Rendered from the validated intent only. This screen cannot alter amounts, recipients, or networks — any change invalidates validation.</p>
+      <dl class="summary">
+        <dt>Merchant</dt><dd id="sum-merchant"></dd>
+        <dt>Amount</dt><dd id="sum-amount"></dd>
+        <dt>Token</dt><dd id="sum-token"></dd>
+        <dt>Network</dt><dd id="sum-network"></dd>
+        <dt>Recipient</dt><dd><code id="sum-recipient" title=""></code></dd>
+        <dt>Purpose</dt><dd id="sum-purpose"></dd>
+        <dt>Valid until</dt><dd id="sum-expiry"></dd>
+      </dl>
+      <div class="risk" id="sum-risk"></div>
+      <div class="row">
+        <button id="btn-confirm">Confirm payment</button>
+        <button id="btn-cancel" class="secondary">Cancel</button>
+      </div>
+      <div id="confirm-result" aria-live="polite"></div>
+    </div>
     <div class="card">
       <div>Backend: <code id="api-url">{apiUrl}</code></div>
       <div>Health: <span id="health">checking…</span></div>
@@ -51,6 +78,7 @@ const apiUrl = import.meta.env.PUBLIC_API_URL ?? "http://localhost:8787";
     </div>
     <script>
       import { validateRequestText } from "../lib/request.js";
+      import { formatMicroUsdc, shortWallet } from "../lib/format.js";
 
       const apiUrl = document.getElementById("api-url")?.textContent ?? "http://localhost:8787";
       const form = document.getElementById("req-form") as HTMLFormElement;
@@ -60,13 +88,131 @@ const apiUrl = import.meta.env.PUBLIC_API_URL ?? "http://localhost:8787";
       const count = document.getElementById("req-count") as HTMLSpanElement;
       const submit = document.getElementById("req-submit") as HTMLButtonElement;
 
+      // BER-136/137: summary + confirmation state. The validated intent is
+      // the only data source here — the UI never edits execution fields.
+      type ValidatedIntentView = {
+        intentId: string;
+        merchantId: string;
+        amountMicroUsdc: number;
+        token: string;
+        network: string;
+        recipient: string;
+        purpose?: string;
+        expiry: string;
+        /** Opaque integrity seal — passed through untouched, never read. */
+        seal: string;
+      };
+      let currentIntent: ValidatedIntentView | null = null;
+      const summaryCard = document.getElementById("summary-card") as HTMLDivElement;
+      const confirmResult = document.getElementById("confirm-result") as HTMLDivElement;
+      const btnConfirm = document.getElementById("btn-confirm") as HTMLButtonElement;
+      const btnCancel = document.getElementById("btn-cancel") as HTMLButtonElement;
+      const set = (id: string, text: string) => {
+        (document.getElementById(id) as HTMLElement).textContent = text;
+      };
+
+      function renderSummary(intent: ValidatedIntentView) {
+        currentIntent = intent;
+        set("sum-merchant", intent.merchantId);
+        set("sum-amount", `${formatMicroUsdc(intent.amountMicroUsdc)} USDC`);
+        set("sum-token", `${intent.token} (SPL)`);
+        set("sum-network", `Solana ${intent.network}`);
+        const recipient = document.getElementById("sum-recipient") as HTMLElement;
+        recipient.textContent = `${shortWallet(intent.recipient)} — full address in title`;
+        recipient.title = intent.recipient;
+        set("sum-purpose", intent.purpose?.trim() ? intent.purpose : "—");
+        set("sum-expiry", new Date(intent.expiry).toLocaleString());
+        set(
+          "sum-risk",
+          `Confirming authorizes ${formatMicroUsdc(intent.amountMicroUsdc)} USDC ` +
+            `to ${intent.recipient} on Solana ${intent.network}. Pact never moves ` +
+            `funds without your explicit confirmation plus your wallet signature. ` +
+            `Check the recipient matches the merchant before confirming.`
+        );
+        confirmResult.textContent = "";
+        btnConfirm.disabled = false;
+        btnCancel.disabled = false;
+        summaryCard.hidden = false;
+      }
+
+      function hideSummary() {
+        currentIntent = null;
+        confirmResult.textContent = "";
+        summaryCard.hidden = true;
+      }
+
+      async function decide(decision: "confirm" | "cancel") {
+        if (!currentIntent) {
+          return;
+        }
+        // Generation guard (Qodo PR #8): apply this response only if the
+        // same intent is still displayed — a newer summary invalidates it.
+        const sentIntentId = currentIntent.intentId;
+        const stillCurrent = () => currentIntent?.intentId === sentIntentId;
+        btnConfirm.disabled = true;
+        btnCancel.disabled = true;
+        confirmResult.textContent = decision === "confirm" ? "Confirming…" : "Cancelling…";
+        try {
+          const res = await fetch(`${apiUrl}/api/intent/confirm`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ intent: currentIntent, decision })
+          });
+          const body = (await res.json()) as {
+            ok: boolean;
+            code?: string;
+            message?: string;
+            intent?: { status: string };
+            event?: { type: string };
+          };
+          if (!stillCurrent()) {
+            // A newer summary arrived mid-flight: discard this response.
+            return;
+          }
+          if (res.ok && body.intent && body.event) {
+            if (body.event.type === "CONFIRMED") {
+              // Sprint exit: awaiting explicit wallet signing (Sprint 2).
+              // No transaction exists — nothing here can create or sign one.
+              confirmResult.textContent =
+                `Confirmed (${body.intent.status}). Awaiting wallet signature in Sprint 2 — ` +
+                `no transaction has been created.`;
+            } else {
+              // Cancelled: terminal. No transaction was or will be created.
+              confirmResult.textContent =
+                "Cancelled — no transaction was created and none will be.";
+            }
+            btnConfirm.disabled = true;
+            btnCancel.disabled = true;
+          } else {
+            confirmResult.textContent = `Could not ${decision}: ${body.message || body.code || res.status}.`;
+            if (stillCurrent()) {
+              btnConfirm.disabled = false;
+              btnCancel.disabled = false;
+            }
+          }
+        } catch (err) {
+          if (!stillCurrent()) {
+            return;
+          }
+          confirmResult.textContent = "Backend not reachable — start pnpm dev:api.";
+          btnConfirm.disabled = false;
+          btnCancel.disabled = false;
+        }
+      }
+
+      btnConfirm.addEventListener("click", () => void decide("confirm"));
+      btnCancel.addEventListener("click", () => void decide("cancel"));
+
       input.addEventListener("input", () => {
         count.textContent = String(input.value.length);
         error.textContent = "";
         // Stale responses must never linger under edited text (Codex P2):
         // any keystroke invalidates the previous round-trip display.
+        // A changed request also retires its summary: confirming the old
+        // payment under new text must be impossible (Qodo PR #8).
         if (!input.disabled) {
           status.textContent = "";
+          hideSummary();
         }
       });
 
@@ -74,6 +220,9 @@ const apiUrl = import.meta.env.PUBLIC_API_URL ?? "http://localhost:8787";
         e.preventDefault();
         error.textContent = "";
         status.textContent = "";
+        // A new submission retires any previous summary first: confirming
+        // the old payment while the new request runs must be impossible.
+        hideSummary();
         const checked = validateRequestText(input.value);
         if (!checked.ok) {
           error.textContent = checked.error;
@@ -110,12 +259,11 @@ const apiUrl = import.meta.env.PUBLIC_API_URL ?? "http://localhost:8787";
             // but never render a response for text the user didn't send).
             status.textContent = "";
           } else if (res.ok && body.intent) {
-            const usdc = body.intent.amountMicroUsdc / 1_000_000;
+            const usdc = formatMicroUsdc(body.intent.amountMicroUsdc);
             status.textContent =
               `Parsed: ${usdc} USDC to ${body.intent.merchantId} ` +
               `(intent ${body.intent.intentId.slice(0, 15)}…). Validating…`;
-            // BER-134/135: run deterministic validation on the parsed intent.
-            // One-line verdict only — the full summary view lands in BER-136.
+            // BER-134/135: deterministic validation on the parsed intent.
             const vres = await fetch(`${apiUrl}/api/intent/validate`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -125,26 +273,46 @@ const apiUrl = import.meta.env.PUBLIC_API_URL ?? "http://localhost:8787";
               ok: boolean;
               code?: string;
               message?: string;
-              intent?: { status: string };
+              intent?: {
+                intentId: string;
+                status: string;
+                merchantId: string;
+                amountMicroUsdc: number;
+                token: string;
+                tokenMint: string;
+                network: string;
+                recipient: string;
+                recipientReference?: string;
+                purpose?: string;
+                expiry: string;
+                seal: string;
+              };
             };
-            if (vres.ok && verdict.intent) {
-              status.textContent += ` Validated (${verdict.intent.status}).`;
+            if (vres.ok && verdict.intent && verdict.intent.status === "VALIDATED") {
+              // BER-136: render the summary from the VALIDATED intent only.
+              renderSummary(verdict.intent);
+              status.textContent = "Validated — review the summary below.";
             } else {
-              status.textContent += ` Rejected: ${verdict.code || vres.status}.`;
+              hideSummary();
+              status.textContent = `Rejected: ${verdict.code || vres.status}.`;
             }
           } else if (res.status === 422 && body.code === "AMBIGUOUS_REQUEST") {
+            hideSummary();
             error.textContent = body.message || "Need a bit more detail.";
             if (body.missing?.length) {
               error.textContent += ` (missing: ${body.missing.join(", ")})`;
             }
             status.textContent = "";
           } else if (!res.ok) {
+            hideSummary();
             error.textContent = body.message || `Request rejected (${body.code || res.status}).`;
             status.textContent = "";
           } else {
+            hideSummary();
             status.textContent = JSON.stringify(body);
           }
         } catch (err) {
+          hideSummary();
           error.textContent = "Backend not reachable — start pnpm dev:api.";
           status.textContent = "";
         } finally {

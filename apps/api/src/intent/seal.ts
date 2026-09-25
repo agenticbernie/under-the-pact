@@ -17,6 +17,15 @@ import type { PaymentIntent } from "@pact/shared"
  * goes through full policy.
  */
 
+/**
+ * Explicit seal-format version (Codex P2): domain-separates HMACs across
+ * format changes so a silent field-list change can never validate old
+ * seals as new (or mix isolates across a rollout). Bumping this
+ * invalidates in-flight intents — acceptable: intents live seconds in
+ * browser memory and are never persisted in Sprint 1 (resubmit to retry).
+ */
+export const SEAL_VERSION = 1
+
 const SEALED_FIELDS = [
   "intentId",
   "status",
@@ -31,7 +40,8 @@ const SEALED_FIELDS = [
   "userWallet",
   "expiry",
   "createdAt",
-  "updatedAt"
+  "updatedAt",
+  "confirmedAt"
 ] as const
 
 type Sealable = Record<(typeof SEALED_FIELDS)[number], unknown>
@@ -52,7 +62,10 @@ export const sealIntent = (
   secret: string
 ): PaymentIntent => ({
   ...intent,
-  seal: createHmac("sha256", secret).update(canonical(intent)).digest("hex")
+  seal: createHmac("sha256", secret)
+    .update(`v${SEAL_VERSION}:`)
+    .update(canonical(intent))
+    .digest("hex")
 })
 
 /** True only if the seal matches every current field value. */
@@ -64,6 +77,7 @@ export const verifyIntentSeal = (
     return false
   }
   const expected = createHmac("sha256", secret)
+    .update(`v${SEAL_VERSION}:`)
     .update(canonical(intent))
     .digest()
   let actual: Buffer
