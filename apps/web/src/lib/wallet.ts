@@ -43,6 +43,9 @@ export const networksMatch = (
  * Values from the Solana/Agave sources — each cluster differs, so the
  * check fully distinguishes devnet/testnet/mainnet-beta. A mainnet
  * override means real-money risk and must block the wallet UI.
+ * NOTE: intentionally duplicated (not imported) from @pact/shared to
+ * keep the browser bundle free of effect/bs58 — both copies are pinned
+ * by unit tests; keep them in sync.
  */
 export const GENESIS_HASHES: Record<SolanaNetworkName, string> = {
   devnet: "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG",

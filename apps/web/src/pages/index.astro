@@ -29,6 +29,8 @@ const solanaRpc = import.meta.env.PUBLIC_SOLANA_RPC_URL ?? "";
       button.secondary { background: #fff; color: #111; }
       #summary-card[hidden] { display: none; }
       #build-card[hidden] { display: none; }
+      #submit-card[hidden] { display: none; }
+      #submit-result { overflow-wrap: anywhere; }
       #confirm-result { font-weight: 600; min-height: 1.5em; }
     </style>
   </head>
@@ -81,6 +83,12 @@ const solanaRpc = import.meta.env.PUBLIC_SOLANA_RPC_URL ?? "";
       <p class="hint">Built server-side from the sealed CONFIRMED intent. Verify every field — signing lands in BER-141.</p>
       <p><button id="btn-build">Build transaction</button></p>
       <div id="build-result" aria-live="polite"></div>
+    </div>
+    <div class="card" id="submit-card" hidden>
+      <h3>6. Submit signed transaction (BER-142)</h3>
+      <p class="hint">Broadcasts what your wallet signed. A signature proves submission only — on-chain verification lands in Sprint 3.</p>
+      <p><button id="btn-submit">Submit to Solana</button></p>
+      <div id="submit-result" aria-live="polite"></div>
     </div>
     <div class="card">
       <div>Backend: <code id="api-url">{apiUrl}</code></div>
@@ -153,6 +161,7 @@ const solanaRpc = import.meta.env.PUBLIC_SOLANA_RPC_URL ?? "";
       function hideSummary() {
         currentIntent = null;
         clearBuildState();
+        hideSubmit();
         confirmResult.textContent = "";
         summaryCard.hidden = true;
         // Retire any preflight tied to the old summary (BER-139).
@@ -196,7 +205,10 @@ const solanaRpc = import.meta.env.PUBLIC_SOLANA_RPC_URL ?? "";
           confirmedIntent === null ||
           detail.intentId !== confirmedIntent.intentId
         ) {
+          // Preflight invalidation (fail, wallet change, reset) retires the
+          // signed payload too: a new sender must re-sign (Qodo 6 PR #14).
           hideBuild();
+          hideSubmit();
           return;
         }
         buildSender = detail.pubkey;
@@ -307,6 +319,144 @@ const solanaRpc = import.meta.env.PUBLIC_SOLANA_RPC_URL ?? "";
           }
         })();
       });
+
+      // BER-142: submit the wallet-signed transaction. Holds the sealed
+      // CONFIRMED intent plus signed bytes; shows pending (signature) or
+      // failure — never success (verification is Sprint 3).
+      type SignedPayload = {
+        intentId: string;
+        sender: string;
+        signedTransaction: string;
+      };
+      let signedPayload: SignedPayload | null = null;
+      const submitCard = document.getElementById("submit-card") as HTMLDivElement;
+      const submitResult = document.getElementById("submit-result") as HTMLDivElement;
+      const btnSubmit = document.getElementById("btn-submit") as HTMLButtonElement;
+
+      function hideSubmit() {
+        signedPayload = null;
+        submitResult.textContent = "";
+        submitCard.hidden = true;
+      }
+
+      window.addEventListener("pact:signed", (e) => {
+        const detail = (e as CustomEvent<SignedPayload>).detail;
+        // Bind to the currently authorized payment only.
+        if (confirmedIntent === null || detail.intentId !== confirmedIntent.intentId) {
+          hideSubmit();
+          return;
+        }
+        signedPayload = detail;
+        submitResult.textContent = "";
+        btnSubmit.disabled = false;
+        submitCard.hidden = false;
+      });
+
+      btnSubmit.addEventListener("click", () => {
+        void (async () => {
+          if (
+            signedPayload === null ||
+            confirmedIntent === null ||
+            signedPayload.intentId !== confirmedIntent.intentId
+          ) {
+            return;
+          }
+          const sent = { ...signedPayload };
+          // Generation covers intent AND sender: a wallet switch mid-flight
+          // discards the response (Qodo 6 PR #14).
+          const stillCurrent = () =>
+            signedPayload?.intentId === sent.intentId &&
+            signedPayload?.sender === sent.sender &&
+            confirmedIntent?.intentId === sent.intentId;
+          btnSubmit.disabled = true;
+          submitResult.textContent = "Submitting to Solana…";
+          try {
+            const res = await fetch(`${apiUrl}/api/tx/submit`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                intent: confirmedIntent,
+                signedTransaction: sent.signedTransaction,
+              }),
+            });
+            if (!stillCurrent()) {
+              return;
+            }
+            const body = (await res.json()) as {
+              ok: boolean;
+              code?: string;
+              message?: string;
+              possibleSignature?: string;
+              attempt?: {
+                intentId: string;
+                signature: string | null;
+                status: string;
+                submittedAt: string;
+              };
+            };
+            if (!stillCurrent()) {
+              return;
+            }
+            if (res.ok && body.attempt) {
+              renderPending(body.attempt.signature, body.attempt.status, body.attempt.submittedAt);
+              // Submitted: single-use — submitting again is rejected server-side.
+              btnSubmit.disabled = true;
+            } else if (body.code === "DUPLICATE_INTENT") {
+              // Already submitted: restore pending from the recorded
+              // attempt instead of claiming failure (Qodo 3 + Codex P2).
+              // Keep disabled — retrying would only duplicate.
+              if (body.attempt?.signature) {
+                renderPending(
+                  body.attempt.signature,
+                  body.attempt.status,
+                  body.attempt.submittedAt,
+                  "Already submitted — restored from the recorded attempt. Pending verification."
+                );
+              } else {
+                submitResult.textContent =
+                  "Already submitted — pending verification. Retry is disabled to prevent duplicates.";
+              }
+              btnSubmit.disabled = true;
+            } else if (body.code === "SUBMISSION_INDETERMINATE") {
+              // Unknown outcome: reconcile on explorer, do NOT rebuild
+              // blindly. Stays disabled until a fresh user action.
+              const sig = body.possibleSignature ?? "(no signature captured)";
+              submitResult.textContent =
+                `Submission outcome unknown: ${body.message ?? ""} ` +
+                `Possible signature: ${sig}. Check the explorer before doing anything else.`;
+              btnSubmit.disabled = true;
+            } else {
+              submitResult.textContent = `Submission failed (${body.code || res.status}): ${body.message || "retry"}. The payment was not submitted — you may retry.`;
+              btnSubmit.disabled = false;
+            }
+          } catch (err) {
+            if (stillCurrent()) {
+              submitResult.textContent = "Backend not reachable — start pnpm dev:api.";
+              btnSubmit.disabled = false;
+            }
+          }
+        })();
+      });
+
+      function renderPending(
+        signature: string | null,
+        status: string,
+        submittedAt: string,
+        prefix?: string
+      ) {
+        const sig = document.createElement("code");
+        sig.textContent = signature ?? "(none captured)";
+        submitResult.innerHTML = "";
+        const p = document.createElement("p");
+        p.textContent = `${prefix ?? "Submitted"} — status ${status} at ${submittedAt}. Signature: `;
+        p.appendChild(sig);
+        submitResult.appendChild(p);
+        const warn = document.createElement("p");
+        warn.setAttribute("role", "alert");
+        warn.textContent =
+          "Pending only: a signature proves submission, NOT success. On-chain verification lands in Sprint 3.";
+        submitResult.appendChild(warn);
+      }
 
       async function decide(decision: "confirm" | "cancel") {
         if (!currentIntent) {

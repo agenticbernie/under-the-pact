@@ -14,13 +14,13 @@ describe("lifecycle store (Qodo PR #8 problem 2)", () => {
     expect(store.get("intent_x")).toMatchObject({ status: "VALIDATED", seal: "seal-2" })
 
     expect(
-      store.consume("intent_x", { status: "CONFIRMED", seal: "seal-3", updatedAt: "t3" })
+      store.consume("intent_x", "VALIDATED", { status: "CONFIRMED", seal: "seal-3", updatedAt: "t3" })
     ).toBe(true)
     expect(store.get("intent_x")?.status).toBe("CONFIRMED")
 
     // Second consume fails: single-use.
     expect(
-      store.consume("intent_x", { status: "CANCELLED", seal: "seal-4", updatedAt: "t4" })
+      store.consume("intent_x", "VALIDATED", { status: "CANCELLED", seal: "seal-4", updatedAt: "t4" })
     ).toBe(false)
     expect(store.get("intent_x")?.status).toBe("CONFIRMED")
   })
@@ -28,7 +28,7 @@ describe("lifecycle store (Qodo PR #8 problem 2)", () => {
   it("never revives terminal states via re-validation", () => {
     const store = createMemoryLifecycleStore()
     store.recordValidated("intent_y", "seal-1", "t1")
-    expect(store.consume("intent_y", { status: "CANCELLED", seal: "seal-2", updatedAt: "t2" })).toBe(true)
+    expect(store.consume("intent_y", "VALIDATED", { status: "CANCELLED", seal: "seal-2", updatedAt: "t2" })).toBe(true)
 
     // Re-validating a decided intent is a no-op: still CANCELLED.
     store.recordValidated("intent_y", "seal-3", "t3")
@@ -38,7 +38,7 @@ describe("lifecycle store (Qodo PR #8 problem 2)", () => {
   it("consume on unknown ids fails", () => {
     const store = createMemoryLifecycleStore()
     expect(
-      store.consume("intent_nope", { status: "CONFIRMED", seal: "s", updatedAt: "t" })
+      store.consume("intent_nope", "VALIDATED", { status: "CONFIRMED", seal: "s", updatedAt: "t" })
     ).toBe(false)
   })
 })

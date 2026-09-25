@@ -1,15 +1,18 @@
 import { describe, expect, it } from "vitest"
 import { Cause, Effect } from "effect"
-import { PublicKey, Transaction } from "@solana/web3.js"
+import { Keypair, PublicKey, Transaction } from "@solana/web3.js"
 import {
+  createTransferCheckedInstruction,
   getAssociatedTokenAddress,
   TOKEN_PROGRAM_ID,
 } from "@solana/spl-token"
 import {
   buildUsdcTransfer,
+  verifySignedTransfer,
   type SolanaReads,
 } from "./txbuilder.js"
 import type { ConfirmedIntent } from "../intent/confirm.js"
+import type { MerchantConfig } from "@pact/shared"
 
 // Real-format fixtures only — no keypairs anywhere near the builder.
 const SENDER = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
@@ -48,6 +51,8 @@ const stubReads = (overrides: Partial<SolanaReads> = {}): SolanaReads => ({
   getLatestBlockhash: async () => BLOCKHASH,
   getAccount: async () => true,
   getMintDecimals: async () => 6,
+  getGenesisHash: async () => "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG",
+  sendRawTransaction: async () => "SIG_test_11111111111111111111111111111111",
   ...overrides,
 })
 
@@ -177,5 +182,143 @@ describe("USDC transaction builder (BER-140)", () => {
         `decimals ${decimals}`
       ).toBe("INTERNAL_ERROR")
     }
+  })
+})
+
+describe("verifySignedTransfer (Qodo 1 + Codex P1 PR #14)", () => {
+  // NOTE: ephemeral test-only keys (never shipped). Shipped sources must
+  // contain no key material; the gate enforces it on non-test files.
+  const merchant = {
+    merchantId: "pact-coffee-demo",
+    displayName: "P",
+    recipientWallet: MERCHANT_WALLET,
+    supportedTokenMint: DEVNET_MINT,
+    network: "devnet",
+    spendingLimitUsdc: 50,
+    active: true,
+  } as MerchantConfig
+  const intent = {
+    ...confirmedIntent(),
+    userWallet: undefined,
+  } as ConfirmedIntent
+
+  const signBuilt = async (
+    amountMicroUsdc: number = 5_000_000,
+    signer: ReturnType<typeof Keypair.generate> | null = null
+  ): Promise<{ b64: string; signer: string }> => {
+    const kp = signer ?? Keypair.generate()
+    const mint = new PublicKey(DEVNET_MINT)
+    const senderAta = await getAssociatedTokenAddress(mint, kp.publicKey, false, TOKEN_PROGRAM_ID)
+    const destAta = await getAssociatedTokenAddress(mint, new PublicKey(MERCHANT_WALLET), false, TOKEN_PROGRAM_ID)
+    const tx = new Transaction()
+    tx.feePayer = kp.publicKey
+    tx.recentBlockhash = BLOCKHASH
+    tx.add(
+      createTransferCheckedInstruction(
+        senderAta,
+        mint,
+        destAta,
+        kp.publicKey,
+        BigInt(amountMicroUsdc),
+        6
+      )
+    )
+    tx.partialSign(kp)
+    return {
+      b64: Buffer.from(tx.serialize()).toString("base64"),
+      signer: kp.publicKey.toBase58(),
+    }
+  }
+
+  const verifyCode = async (b64: string, forIntent: ConfirmedIntent = intent) => {
+    const exit = await Effect.runPromiseExit(
+      verifySignedTransfer(b64, forIntent, merchant)
+    )
+    if (exit._tag === "Success") {
+      return "OK"
+    }
+    const opt = Cause.failureOption(exit.cause)
+    if (opt._tag === "None") {
+      throw new Error("expected typed failure")
+    }
+    return (opt.value as { code: string }).code
+  }
+
+  it("accepts the genuine authorized build", async () => {
+    const { b64, signer } = await signBuilt()
+    const exit = await Effect.runPromiseExit(
+      verifySignedTransfer(b64, { ...intent, userWallet: signer }, merchant)
+    )
+    expect(exit._tag).toBe("Success")
+  })
+
+  it("rejects wrong amount, foreign program, unsigned, and wrong signer", async () => {
+    // Wrong amount for this intent.
+    const wrongAmount = await signBuilt(1)
+    expect(await verifyCode(wrongAmount.b64)).toBe("INVALID_REQUEST")
+
+    // Foreign program: System transfer signed by anyone.
+    const kp = Keypair.generate()
+    const sysTx = new Transaction()
+    sysTx.feePayer = kp.publicKey
+    sysTx.recentBlockhash = BLOCKHASH
+    sysTx.add({
+      keys: [{ pubkey: kp.publicKey, isSigner: true, isWritable: true }],
+      programId: new PublicKey("11111111111111111111111111111111"),
+      data: Buffer.from([2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+    })
+    sysTx.partialSign(kp)
+    expect(
+      await verifyCode(Buffer.from(sysTx.serialize()).toString("base64"))
+    ).toBe("INVALID_REQUEST")
+
+    // Correctly built but never signed.
+    const mint = new PublicKey(DEVNET_MINT)
+    const sender = Keypair.generate().publicKey
+    const unsigned = new Transaction()
+    unsigned.feePayer = sender
+    unsigned.recentBlockhash = BLOCKHASH
+    unsigned.add(
+      createTransferCheckedInstruction(
+        await getAssociatedTokenAddress(mint, sender, false, TOKEN_PROGRAM_ID),
+        mint,
+        await getAssociatedTokenAddress(mint, new PublicKey(MERCHANT_WALLET), false, TOKEN_PROGRAM_ID),
+        sender,
+        BigInt(5_000_000),
+        6
+      )
+    )
+    expect(
+      await verifyCode(
+        Buffer.from(unsigned.serialize({ requireAllSignatures: false })).toString("base64")
+      )
+    ).toBe("INVALID_REQUEST")
+
+    // Bound wallet mismatch.
+    const { b64 } = await signBuilt()
+    expect(
+      await verifyCode(
+        b64,
+        { ...intent, userWallet: MERCHANT_WALLET } as ConfirmedIntent
+      )
+    ).toBe("INVALID_REQUEST")
+  })
+})
+
+describe("backend cluster guard on build (Codex P1 PR #14)", () => {
+  it("refuses to build against the wrong cluster", async () => {
+    const exit = await Effect.runPromiseExit(
+      buildUsdcTransfer({
+        intent: confirmedIntent(),
+        sender: SENDER,
+        merchant: merchant as never,
+        rpcUrl: "https://example.test",
+        reads: stubReads({
+          getGenesisHash: async () =>
+            "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+        }),
+      })
+    )
+    expect(exit._tag).toBe("Failure")
   })
 })
