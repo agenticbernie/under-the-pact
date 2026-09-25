@@ -283,3 +283,14 @@ unsigned details for inspection; signing lands in BER-141.
   values fail boot loudly.
 - Web build card: preflight failures keep the confirmed intent for retry;
   build responses render only for the still-current intent + sender.
+
+## Wallet signing flow (BER-141, C-007)
+
+`SigningPanel` island: enabled only when confirmation + preflight +
+unsigned build line up on the same intent, sender, and connected wallet
+(pure canSign gate, re-checked at click time). The wallet popup signs
+the user-reviewed transaction — Pact never sees a private key, only the
+signed bytes (emitted as `pact:signed` for BER-142 submission) or a
+rejection. States: signing / signed-ready / rejected-safe /
+error — rejection creates no payment and submits nothing. Stale
+responses are discarded by generation guard.

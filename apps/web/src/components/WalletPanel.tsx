@@ -13,6 +13,7 @@ import {
 } from "../lib/wallet.js";
 import { WalletProviders } from "./WalletProviders.js";
 import { PreflightPanel } from "./PreflightPanel.js";
+import { SigningPanel } from "./SigningPanel.js";
 
 /**
  * BER-138: connection panel (mounted client:only — wallets need window).
@@ -200,6 +201,7 @@ export function WalletRoot({
     <WalletProviders endpoint={endpoint}>
       <Panel apiUrl={apiUrl} network={network} endpoint={endpoint} />
       <PreflightPanel network={network} />
+      <SigningPanel />
     </WalletProviders>
   );
 }

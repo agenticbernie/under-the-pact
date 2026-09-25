@@ -238,6 +238,7 @@ const solanaRpc = import.meta.env.PUBLIC_SOLANA_RPC_URL ?? "";
               code?: string;
               message?: string;
               transaction?: {
+                transaction: string;
                 sender: string;
                 senderAta: string;
                 recipientAta: string;
@@ -246,6 +247,10 @@ const solanaRpc = import.meta.env.PUBLIC_SOLANA_RPC_URL ?? "";
                 blockhash: string;
               };
             };
+            if (!stillCurrent()) {
+              // Intent/sender moved on mid-flight: discard the response.
+              return;
+            }
             if (res.ok && body.transaction) {
               const t = body.transaction;
               buildResult.innerHTML = "";
@@ -274,8 +279,18 @@ const solanaRpc = import.meta.env.PUBLIC_SOLANA_RPC_URL ?? "";
               const note = document.createElement("p");
               note.className = "hint";
               note.textContent =
-                "Unsigned transaction built — inspect it above. Wallet signing lands in BER-141; nothing is signed or submitted.";
+                "Unsigned transaction built — inspect it above, then sign in your wallet below. Nothing is submitted.";
               buildResult.appendChild(note);
+              // Hand the unsigned build to the signing flow (BER-141).
+              window.dispatchEvent(
+                new CustomEvent("pact:built", {
+                  detail: {
+                    intentId: sentIntentId,
+                    sender: sentSender,
+                    transaction: body.transaction.transaction,
+                  },
+                })
+              );
             } else {
               if (stillCurrent()) {
                 buildResult.textContent = `Build failed: ${body.message || body.code || res.status}.`;
