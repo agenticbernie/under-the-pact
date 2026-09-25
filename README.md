@@ -230,4 +230,9 @@ unsupported-wallet/network/mismatch states; no signing calls here
 Frontend network comes from `PUBLIC_SOLANA_NETWORK` (+ optional
 `PUBLIC_SOLANA_RPC_URL` override) and is cross-checked against the
 backend policy network from `/api/merchant` — both must match devnet
-for the PoC demo.
+for the PoC demo. Two review hardening (PR #10): the RPC endpoint's
+genesis hash is probed and must match the selected cluster (a mainnet
+override blocks the wallet UI — real-money risk), and backend-network
+verification is an explicit loading/verified/error tri-state (failures
+show an alert, never a silent match). Disconnecting an unsupported
+wallet also clears the adapter selection so the chooser reopens.

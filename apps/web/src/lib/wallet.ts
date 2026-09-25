@@ -36,3 +36,26 @@ export const networksMatch = (
   backend: string | undefined
 ): boolean =>
   backend !== undefined && backend.length > 0 ? frontend === backend : true
+
+/**
+ * Genesis hashes identify the actual Solana cluster behind an RPC URL
+ * (Qodo PR #10: a PUBLIC_SOLANA_RPC_URL override may point elsewhere).
+ * Values from the Solana/Agave sources — each cluster differs, so the
+ * check fully distinguishes devnet/testnet/mainnet-beta. A mainnet
+ * override means real-money risk and must block the wallet UI.
+ */
+export const GENESIS_HASHES: Record<SolanaNetworkName, string> = {
+  devnet: "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG",
+  testnet: "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY",
+  "mainnet-beta": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"
+}
+
+export const genesisMatchesNetwork = (
+  network: SolanaNetworkName,
+  genesisHash: string
+): boolean => GENESIS_HASHES[network] === genesisHash.trim()
+
+export type NetworkVerification =
+  | { state: "loading" }
+  | { state: "verified"; backendNetwork: string }
+  | { state: "error" }
