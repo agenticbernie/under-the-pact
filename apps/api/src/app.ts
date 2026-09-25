@@ -32,6 +32,7 @@ import { assertConfirmed } from "./intent/confirm.js"
 import {
   buildUsdcTransfer,
   liveSolanaReads,
+  verifySignedTransfer,
   type SolanaReads,
 } from "./solana/txbuilder.js"
 import {
@@ -748,17 +749,37 @@ export const createApp = (opts: AppOptions = {}) => {
           }
         } as const
       }
-      // Fast duplicate check: a SUBMITTED record means this exact flow
-      // already ran. (The full gate below stays authoritative.)
-      const preStore = yield* LifecycleStore
-      const preRecord = preStore.get(shaped.right.intentId)
-      if (preRecord !== undefined && preRecord.status === "SUBMITTED") {
+      const store = yield* LifecycleStore
+      const attempts = yield* AttemptLog
+      const priorAttempt = () =>
+        attempts
+          .list(shaped.right.intentId)
+          .find((a) => a.status === "SUBMITTED")
+      // Fast duplicate check: SUBMITTED means this exact flow already ran
+      // (answer from the recorded attempt); SUBMITTING means a broadcast
+      // is in flight or its outcome is still unknown — either way, no
+      // second broadcast (Qodo 2 + Codex P1 PR #14).
+      // (The full gate below stays authoritative.)
+      const preRecord = store.get(shaped.right.intentId)
+      if (preRecord !== undefined && preRecord.status !== "CONFIRMED") {
+        const prior = priorAttempt()
+        const inFlight = preRecord.status === "SUBMITTING"
         return {
           status: 422,
           body: {
             ok: false,
             code: PolicyErrorCode.DUPLICATE_INTENT,
-            message: "Intent already submitted."
+            message: inFlight
+              ? "Submission already in flight or of unknown outcome — reconcile before retrying, do not rebuild blindly."
+              : "Intent already submitted — pending verification.",
+            attempt: prior
+              ? {
+                  intentId: prior.intentId,
+                  signature: prior.transactionSignature,
+                  status: prior.status,
+                  submittedAt: prior.submittedAt,
+                }
+              : undefined,
           }
         } as const
       }
@@ -783,43 +804,107 @@ export const createApp = (opts: AppOptions = {}) => {
         }
         return { status, body: { ok: false, code: gated.error.code, message: gated.error.message } } as const
       }
+      // The signed bytes must BE the authorized build (Qodo 1 + Codex P1):
+      // same message, expected sender, valid crypto — else 400 pre-broadcast.
+      const cfg = yield* PactConfigService
+      const checked = yield* verifySignedTransfer(
+        raw.signedTransaction as string,
+        gated.intent,
+        cfg.merchant
+      ).pipe(
+        Effect.map((v) => ({ _tag: "Checked", verified: v }) as const),
+        Effect.catchAll((error) =>
+          Effect.succeed({ _tag: "Rejected", error } as const)
+        )
+      )
+      if (checked._tag === "Rejected") {
+        const status =
+          checked.error.code === PolicyErrorCode.INTERNAL_ERROR ? 500 : 400
+        if (status === 500) {
+          console.error("[pact-api] submit verify failed:", checked.error.message)
+        }
+        return {
+          status,
+          body: { ok: false, code: checked.error.code, message: checked.error.message },
+        } as const
+      }
+      // Reserve BEFORE broadcast (Qodo 2 + Codex P1): concurrent retries
+      // can never both reach the network for one intent.
+      if (
+        !store.consume(gated.intent.intentId, "CONFIRMED", {
+          status: "SUBMITTING",
+          seal: gated.intent.seal as string,
+          updatedAt: submittedAt,
+        })
+      ) {
+        const prior = priorAttempt()
+        return {
+          status: 422,
+          body: {
+            ok: false,
+            code: PolicyErrorCode.DUPLICATE_INTENT,
+            message: "Intent already submitted — pending verification.",
+            attempt: prior
+              ? {
+                  intentId: prior.intentId,
+                  signature: prior.transactionSignature,
+                  status: prior.status,
+                  submittedAt: prior.submittedAt,
+                }
+              : undefined,
+          },
+        } as const
+      }
       const broadcast = yield* submitSignedTransaction({
         signedTransaction: raw.signedTransaction as string,
-        reads: opts.solanaReads ?? liveSolanaReads((yield* PactConfigService).solanaRpcUrl),
+        reads: opts.solanaReads ?? liveSolanaReads(cfg.solanaRpcUrl),
       }).pipe(
         Effect.map((r) => ({ _tag: "Sent", signature: r.signature }) as const),
         Effect.catchAll((error) =>
           Effect.succeed({ _tag: "Rejected", error } as const)
         )
       )
-      const attempts = yield* AttemptLog
-      const store = yield* LifecycleStore
       if (broadcast._tag === "Rejected") {
+        // Indeterminate (Codex P1): the RPC may have accepted before the
+        // response was lost — record INDETERMINATE with the would-be
+        // signature for explorer reconciliation, keep SUBMITTING (no
+        // auto-restore that could double-send), and never report success.
+        const attemptId = createAttemptId()
         attempts.record({
-          attemptId: createAttemptId(),
+          attemptId,
           intentId: gated.intent.intentId,
-          transactionSignature: null,
-          status: "FAILED",
+          transactionSignature: checked.verified.signature,
+          status: "INDETERMINATE",
           submittedAt,
           failureReason: broadcast.error.message,
         })
-        const status =
-          broadcast.error.code === PolicyErrorCode.INTERNAL_ERROR ? 500 : 400
-        if (status === 500) {
-          console.error("[pact-api] submit failed:", broadcast.error.message)
-        }
+        console.error("[pact-api] submit indeterminate:", broadcast.error.message)
         return {
-          status,
-          body: { ok: false, code: broadcast.error.code, message: broadcast.error.message },
+          status: 500,
+          body: {
+            ok: false,
+            code: PolicyErrorCode.SUBMISSION_INDETERMINATE,
+            message:
+              "Submission outcome unknown — it may have reached Solana. Check the explorer for the possible signature before retrying; do not rebuild blindly.",
+            possibleSignature: checked.verified.signature,
+            attempt: {
+              attemptId,
+              intentId: gated.intent.intentId,
+              signature: checked.verified.signature,
+              status: "INDETERMINATE" as const,
+              submittedAt,
+            },
+          },
         } as const
       }
-      // Single-use: the same intent can never submit twice.
+      // Settle the reservation. Single-use: the same intent can never
+      // submit twice.
       const finalIntent = sealIntent(
         { ...gated.intent, status: "SUBMITTED" as const, updatedAt: submittedAt },
         sealSecret
       )
       if (
-        !store.consume(gated.intent.intentId, "CONFIRMED", {
+        !store.consume(gated.intent.intentId, "SUBMITTING", {
           status: "SUBMITTED",
           seal: finalIntent.seal as string,
           updatedAt: submittedAt,
@@ -830,12 +915,13 @@ export const createApp = (opts: AppOptions = {}) => {
           body: {
             ok: false,
             code: PolicyErrorCode.DUPLICATE_INTENT,
-            message: "Intent already submitted.",
+            message: "Intent already submitted — pending verification.",
           },
         } as const
       }
+      const attemptId = createAttemptId()
       attempts.record({
-        attemptId: createAttemptId(),
+        attemptId,
         intentId: gated.intent.intentId,
         transactionSignature: broadcast.signature,
         status: "SUBMITTED",
@@ -847,6 +933,7 @@ export const createApp = (opts: AppOptions = {}) => {
         body: {
           ok: true,
           attempt: {
+            attemptId,
             intentId: gated.intent.intentId,
             signature: broadcast.signature,
             status: "SUBMITTED" as const,

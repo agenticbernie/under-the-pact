@@ -205,7 +205,10 @@ const solanaRpc = import.meta.env.PUBLIC_SOLANA_RPC_URL ?? "";
           confirmedIntent === null ||
           detail.intentId !== confirmedIntent.intentId
         ) {
+          // Preflight invalidation (fail, wallet change, reset) retires the
+          // signed payload too: a new sender must re-sign (Qodo 6 PR #14).
           hideBuild();
+          hideSubmit();
           return;
         }
         buildSender = detail.pubkey;
@@ -359,8 +362,11 @@ const solanaRpc = import.meta.env.PUBLIC_SOLANA_RPC_URL ?? "";
             return;
           }
           const sent = { ...signedPayload };
+          // Generation covers intent AND sender: a wallet switch mid-flight
+          // discards the response (Qodo 6 PR #14).
           const stillCurrent = () =>
             signedPayload?.intentId === sent.intentId &&
+            signedPayload?.sender === sent.sender &&
             confirmedIntent?.intentId === sent.intentId;
           btnSubmit.disabled = true;
           submitResult.textContent = "Submitting to Solana…";
@@ -380,9 +386,10 @@ const solanaRpc = import.meta.env.PUBLIC_SOLANA_RPC_URL ?? "";
               ok: boolean;
               code?: string;
               message?: string;
+              possibleSignature?: string;
               attempt?: {
                 intentId: string;
-                signature: string;
+                signature: string | null;
                 status: string;
                 submittedAt: string;
               };
@@ -391,19 +398,32 @@ const solanaRpc = import.meta.env.PUBLIC_SOLANA_RPC_URL ?? "";
               return;
             }
             if (res.ok && body.attempt) {
-              const sig = document.createElement("code");
-              sig.textContent = body.attempt.signature;
-              submitResult.innerHTML = "";
-              const p = document.createElement("p");
-              p.textContent = `Submitted — status ${body.attempt.status} at ${body.attempt.submittedAt}. Signature: `;
-              p.appendChild(sig);
-              submitResult.appendChild(p);
-              const warn = document.createElement("p");
-              warn.setAttribute("role", "alert");
-              warn.textContent =
-                "Pending only: a signature proves submission, NOT success. On-chain verification lands in Sprint 3.";
-              submitResult.appendChild(warn);
+              renderPending(body.attempt.signature, body.attempt.status, body.attempt.submittedAt);
               // Submitted: single-use — submitting again is rejected server-side.
+              btnSubmit.disabled = true;
+            } else if (body.code === "DUPLICATE_INTENT") {
+              // Already submitted: restore pending from the recorded
+              // attempt instead of claiming failure (Qodo 3 + Codex P2).
+              // Keep disabled — retrying would only duplicate.
+              if (body.attempt?.signature) {
+                renderPending(
+                  body.attempt.signature,
+                  body.attempt.status,
+                  body.attempt.submittedAt,
+                  "Already submitted — restored from the recorded attempt. Pending verification."
+                );
+              } else {
+                submitResult.textContent =
+                  "Already submitted — pending verification. Retry is disabled to prevent duplicates.";
+              }
+              btnSubmit.disabled = true;
+            } else if (body.code === "SUBMISSION_INDETERMINATE") {
+              // Unknown outcome: reconcile on explorer, do NOT rebuild
+              // blindly. Stays disabled until a fresh user action.
+              const sig = body.possibleSignature ?? "(no signature captured)";
+              submitResult.textContent =
+                `Submission outcome unknown: ${body.message ?? ""} ` +
+                `Possible signature: ${sig}. Check the explorer before doing anything else.`;
               btnSubmit.disabled = true;
             } else {
               submitResult.textContent = `Submission failed (${body.code || res.status}): ${body.message || "retry"}. The payment was not submitted — you may retry.`;
@@ -417,6 +437,26 @@ const solanaRpc = import.meta.env.PUBLIC_SOLANA_RPC_URL ?? "";
           }
         })();
       });
+
+      function renderPending(
+        signature: string | null,
+        status: string,
+        submittedAt: string,
+        prefix?: string
+      ) {
+        const sig = document.createElement("code");
+        sig.textContent = signature ?? "(none captured)";
+        submitResult.innerHTML = "";
+        const p = document.createElement("p");
+        p.textContent = `${prefix ?? "Submitted"} — status ${status} at ${submittedAt}. Signature: `;
+        p.appendChild(sig);
+        submitResult.appendChild(p);
+        const warn = document.createElement("p");
+        warn.setAttribute("role", "alert");
+        warn.textContent =
+          "Pending only: a signature proves submission, NOT success. On-chain verification lands in Sprint 3.";
+        submitResult.appendChild(warn);
+      }
 
       async function decide(decision: "confirm" | "cancel") {
         if (!currentIntent) {

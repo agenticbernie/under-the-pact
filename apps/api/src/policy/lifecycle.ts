@@ -16,7 +16,12 @@ import { Context, Layer } from "effect"
  * documented, replaced by Postgres in Sprint 3).
  */
 
-export type StoredStatus = "VALIDATED" | "CONFIRMED" | "CANCELLED" | "SUBMITTED"
+export type StoredStatus =
+  | "VALIDATED"
+  | "CONFIRMED"
+  | "CANCELLED"
+  | "SUBMITTING"
+  | "SUBMITTED"
 
 export interface LifecycleSnapshot {
   status: StoredStatus
@@ -37,16 +42,18 @@ export interface LifecycleStoreApi {
   /**
    * Atomically move an expected state -> next. Returns false unless the
    * current record exists and still holds the expected status (single-use).
-   * Confirmation consumes VALIDATED; submission consumes CONFIRMED
-   * (BER-142: same intent can never submit twice). Synchronous: atomic on
-   * Node's single thread; Sprint 3 uses a SERIALIZABLE transaction /
-   * advisory lock for the same guarantee across processes.
+   * Confirmation consumes VALIDATED; submission reserves CONFIRMED ->
+   * SUBMITTING *before* the RPC call (Qodo/Codex PR #14: concurrent
+   * retries must never both broadcast) and settles SUBMITTING ->
+   * SUBMITTED after acceptance. Synchronous: atomic on Node's single
+   * thread; Sprint 3 uses a SERIALIZABLE transaction / advisory lock for
+   * the same guarantee across processes.
    */
   consume(
     intentId: string,
-    expected: "VALIDATED" | "CONFIRMED",
+    expected: "VALIDATED" | "CONFIRMED" | "SUBMITTING",
     next: {
-      status: "CONFIRMED" | "CANCELLED" | "SUBMITTED"
+      status: "CONFIRMED" | "CANCELLED" | "SUBMITTING" | "SUBMITTED"
       seal: string
       updatedAt: string
     }

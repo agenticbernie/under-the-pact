@@ -25,7 +25,8 @@ export interface PaymentAttempt {
   attemptId: string
   intentId: string
   transactionSignature: string | null
-  status: "SUBMITTED" | "FAILED"
+  /** INDETERMINATE: broadcast errored after possibly reaching the network. */
+  status: "SUBMITTED" | "FAILED" | "INDETERMINATE"
   submittedAt: string
   failureReason: string | null
 }

@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest"
 import { Schema } from "effect"
-import { Keypair, Transaction } from "@solana/web3.js"
+import { Keypair, PublicKey, Transaction } from "@solana/web3.js"
+import {
+  createTransferCheckedInstruction,
+  getAssociatedTokenAddress,
+  TOKEN_PROGRAM_ID,
+} from "@solana/spl-token"
 import {
   PaymentIntent,
   createIntentId,
@@ -160,6 +165,39 @@ describe("POST /api/tx/submit", () => {
     expect(gated.status).toBe(422)
   })
 
+  it("rejects signed bytes that are not the authorized build (Qodo 1)", async () => {
+    const app = createApp({ solanaReads: stubReads() })
+    const intent = await confirmedIntent(app)
+    // Real signature, wrong amount (1 micro vs 5M approved).
+    const mint = new PublicKey("4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU")
+    const tx = new Transaction()
+    tx.feePayer = payer.publicKey
+    tx.recentBlockhash = "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY"
+    tx.add(
+      createTransferCheckedInstruction(
+        await getAssociatedTokenAddress(mint, payer.publicKey, false, TOKEN_PROGRAM_ID),
+        mint,
+        await getAssociatedTokenAddress(
+          mint,
+          new PublicKey("11111111111111111111111111111111"),
+          false,
+          TOKEN_PROGRAM_ID
+        ),
+        payer.publicKey,
+        BigInt(1),
+        6
+      )
+    )
+    tx.partialSign(payer)
+    const res = await post(app, {
+      intent,
+      signedTransaction: Buffer.from(tx.serialize()).toString("base64"),
+    })
+    expect(res.status).toBe(400)
+    const body = (await res.json()) as { code: string }
+    expect(body.code).toBe("INVALID_REQUEST")
+  })
+
   it("blocks duplicate submission of the same intent", async () => {
     const app = createApp({ solanaReads: stubReads() })
     const intent = await confirmedIntent(app)
@@ -172,7 +210,7 @@ describe("POST /api/tx/submit", () => {
     expect(body.code).toBe("DUPLICATE_INTENT")
   })
 
-  it("records failure honestly and allows retry", async () => {
+  it("records broadcast errors as INDETERMINATE with reconcile data", async () => {
     let fail = true
     const app = createApp({
       solanaReads: stubReads({
@@ -188,13 +226,24 @@ describe("POST /api/tx/submit", () => {
     const signed = await signedFor(app, intent)
     const failed = await post(app, { intent, signedTransaction: signed })
     expect(failed.status).toBe(500)
-    const failedBody = (await failed.json()) as { ok: boolean; code: string }
+    const failedBody = (await failed.json()) as {
+      ok: boolean
+      code: string
+      possibleSignature?: string
+      attempt?: { status: string }
+    }
     expect(failedBody.ok).toBe(false)
-    expect(failedBody.code).toBe("INTERNAL_ERROR")
+    expect(failedBody.code).toBe("SUBMISSION_INDETERMINATE")
+    // The would-be signature lets the operator reconcile on the explorer.
+    expect(typeof failedBody.possibleSignature).toBe("string")
+    expect(failedBody.attempt?.status).toBe("INDETERMINATE")
 
-    // Same intent retries after the outage: still CONFIRMED, not consumed.
+    // No blind rebuild while indeterminate: same bytes are rejected so a
+    // possibly-landed transaction can never double-send.
     fail = false
     const retry = await post(app, { intent, signedTransaction: signed })
-    expect(retry.status).toBe(200)
+    expect(retry.status).toBe(422)
+    const retryBody = (await retry.json()) as { code: string }
+    expect(retryBody.code).toBe("DUPLICATE_INTENT")
   })
 })

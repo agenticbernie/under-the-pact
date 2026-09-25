@@ -325,3 +325,20 @@ pending only, never verified success (Sprint 3 verifies on-chain).
 Attempts live in-process in Sprint 2 (Postgres in Sprint 3). The web
 submit card shows pending + signature with an explicit not-success
 warning; failures keep retry available.
+
+## Submission review hardening (PR #14, Qodo + Codex)
+
+- Submitted bytes must BE the authorized build: fee payer, program,
+  TransferChecked layout, exact amount/precision, derived ATAs, and
+  cryptographic signature validity — else 400 pre-broadcast.
+- Reserve-before-broadcast: CONFIRMED→SUBMITTING is consumed atomically
+  before the RPC call; concurrent retries can never both reach Solana.
+- Broadcast errors are INDETERMINATE (new code SUBMISSION_INDETERMINATE
+  with the would-be signature for explorer reconciliation), never silent
+  success and never an auto-restore that could double-send.
+- DUPLICATE_INTENT answers carry the recorded attempt so the UI restores
+  pending instead of claiming failure; submit stays disabled.
+- Web submit card retires signed payloads on preflight/wallet transitions
+  and generation-guards intent + sender on every response.
+- Durable Postgres for lifecycle + attempts arrives in Sprint 3
+  (BER-145/146); LIFECYCLE_STORE already selects the backend.

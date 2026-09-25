@@ -1,4 +1,5 @@
 import { Effect } from "effect"
+import base58 from "bs58"
 import {
   Connection,
   PublicKey,
@@ -259,5 +260,132 @@ const buildWithAtas = (
       amountMicroUsdc: intent.amountMicroUsdc,
       decimals,
       blockhash,
+    }
+  })
+
+/**
+ * Submission-time verification (Qodo 1 + Codex P1 PR #14): the signed
+ * transaction must BE the authorized payment — same mint, recipient,
+ * amount, and precision as the sealed CONFIRMED intent, signed by the
+ * bound sender, cryptographically valid. Anything else is INVALID_REQUEST
+ * before any broadcast: unrelated/foreign-signed/substituted payloads can
+ * never consume the intent or pollute the attempt trail.
+ *
+ * Sender rule mirrors the builder: when the intent binds a wallet, the
+ * fee payer must equal it; otherwise any valid fee payer that signed is
+ * accepted (the wallet UI showed the user exactly this transaction).
+ */
+export const verifySignedTransfer = (
+  signedBase64: string,
+  intent: ConfirmedIntent,
+  merchant: MerchantConfig
+): Effect.Effect<{ feePayer: string; signature: string }, PolicyError> =>
+  Effect.gen(function* () {
+    const signed = yield* Effect.try({
+      try: () =>
+        Transaction.from(Buffer.from(signedBase64, "base64")),
+      catch: () =>
+        new PolicyError({
+          code: PolicyErrorCode.INVALID_REQUEST,
+          message: "Signed transaction is not decodable.",
+        }),
+    })
+    // Exactly one instruction, and it must be our TransferChecked.
+    if (signed.instructions.length !== 1) {
+      return yield* fail(
+        PolicyErrorCode.INVALID_REQUEST,
+        "Transaction must contain exactly the authorized transfer instruction."
+      )
+    }
+    const ix = signed.instructions[0]
+    if (!ix.programId.equals(TOKEN_PROGRAM_ID)) {
+      return yield* fail(
+        PolicyErrorCode.INVALID_REQUEST,
+        "Transaction program is not the SPL Token program."
+      )
+    }
+    const data = Buffer.from(ix.data)
+    if (data[0] !== 12) {
+      return yield* fail(
+        PolicyErrorCode.INVALID_REQUEST,
+        "Transaction instruction is not a checked token transfer."
+      )
+    }
+    const amount = Number(data.readBigUInt64LE(1))
+    const decimals = data[9]
+    if (
+      amount !== intent.amountMicroUsdc ||
+      decimals !== 6 ||
+      ix.keys.length < 4
+    ) {
+      return yield* fail(
+        PolicyErrorCode.INVALID_REQUEST,
+        "Transaction amount or precision differs from the authorized intent."
+      )
+    }
+    // Fee payer must be a valid signer of this transaction, and must equal
+    // the bound wallet when the intent carries one.
+    const feePayer = signed.feePayer?.toBase58() ?? null
+    if (feePayer === null) {
+      return yield* fail(
+        PolicyErrorCode.INVALID_REQUEST,
+        "Transaction has no fee payer."
+      )
+    }
+    if (intent.userWallet !== undefined && intent.userWallet !== feePayer) {
+      return yield* fail(
+        PolicyErrorCode.INVALID_REQUEST,
+        "Transaction fee payer is not the wallet bound to this intent."
+      )
+    }
+    const slot = signed.signatures.find(
+      (s) => s.publicKey.toBase58() === feePayer
+    )
+    if (slot === undefined || slot.signature === null) {
+      return yield* fail(
+        PolicyErrorCode.INVALID_REQUEST,
+        "Fee payer has not signed this transaction."
+      )
+    }
+    const [sourceAta, destAta] = yield* Effect.tryPromise({
+      try: async () => {
+        const mintKey = new PublicKey(intent.tokenMint)
+        const senderKey = new PublicKey(feePayer)
+        const recipientKey = new PublicKey(intent.recipient)
+        return [
+          (
+            await getAssociatedTokenAddress(mintKey, senderKey, false, TOKEN_PROGRAM_ID)
+          ).toBase58(),
+          (
+            await getAssociatedTokenAddress(mintKey, recipientKey, false, TOKEN_PROGRAM_ID)
+          ).toBase58(),
+        ] as const
+      },
+      catch: () =>
+        new PolicyError({
+          code: PolicyErrorCode.INTERNAL_ERROR,
+          message: "Could not derive expected token accounts.",
+        }),
+    })
+    if (
+      ix.keys[0].pubkey.toBase58() !== sourceAta ||
+      ix.keys[1].pubkey.toBase58() !== intent.tokenMint ||
+      ix.keys[1].pubkey.toBase58() !== merchant.supportedTokenMint ||
+      ix.keys[2].pubkey.toBase58() !== destAta
+    ) {
+      return yield* fail(
+        PolicyErrorCode.INVALID_REQUEST,
+        "Transaction accounts differ from the authorized build."
+      )
+    }
+    if (!signed.verifySignatures()) {
+      return yield* fail(
+        PolicyErrorCode.INVALID_REQUEST,
+        "Transaction signatures do not verify."
+      )
+    }
+    return {
+      feePayer,
+      signature: base58.encode(Buffer.from(slot.signature)),
     }
   })
