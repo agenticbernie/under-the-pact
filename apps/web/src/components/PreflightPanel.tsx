@@ -49,7 +49,7 @@ const emit = (detail: PreflightEvent) => {
  */
 export function PreflightPanel({ network }: { network: string }) {
   const { connection } = useConnection();
-  const { publicKey, connected } = useWallet();
+  const { wallet, publicKey, connected } = useWallet();
   const [phase, setPhase] = useState<Phase>({ state: "idle" });
   const generation = useRef(0);
   const storedIntent = useRef<ConfirmedIntentView | null>(null);
@@ -180,6 +180,7 @@ export function PreflightPanel({ network }: { network: string }) {
 
         const result = evaluatePreflight({
           connected: true,
+          walletName: wallet?.adapter?.name ?? null,
           networkCheck,
           balances,
           amountMicroUsdc: intent.amountMicroUsdc,

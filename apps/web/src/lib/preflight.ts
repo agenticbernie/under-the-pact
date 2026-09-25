@@ -1,4 +1,7 @@
-import type { SolanaNetworkName } from "./wallet.js";
+import {
+  isSupportedWallet,
+  type SolanaNetworkName,
+} from "./wallet.js";
 
 /**
  * BER-139 / C-008: wallet/network/balance preflight (pure logic).
@@ -19,6 +22,7 @@ export const LAMPORTS_PER_SOL = 1_000_000_000;
 
 export type PreflightCode =
   | "WALLET_NOT_CONNECTED"
+  | "UNSUPPORTED_WALLET"
   | "WRONG_NETWORK"
   | "RPC_UNREACHABLE"
   | "INSUFFICIENT_SOL"
@@ -44,6 +48,8 @@ export interface PreflightBalances {
 
 export interface PreflightInput {
   connected: boolean;
+  /** Adapter name — PoC supports Phantom only (Codex PR #11). */
+  walletName: string | null;
   networkCheck: NetworkCheck;
   balances: PreflightBalances | null;
   amountMicroUsdc: number;
@@ -93,6 +99,14 @@ export const evaluatePreflight = (input: PreflightInput): PreflightResult => {
         },
       ],
     };
+  }
+  // One-wallet restriction is enforced here too: the wallet panel warns,
+  // but preflight must never pass a non-Phantom wallet (Codex PR #11).
+  if (!isSupportedWallet(input.walletName)) {
+    issues.push({
+      code: "UNSUPPORTED_WALLET",
+      message: `Connected wallet “${input.walletName ?? "unknown"}” is not supported — this demo requires Phantom.`,
+    });
   }
 
   if (input.networkCheck.status === "mismatched") {

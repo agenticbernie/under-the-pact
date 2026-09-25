@@ -15,6 +15,7 @@ const balances = {
 
 const base: PreflightInput = {
   connected: true,
+  walletName: "Phantom",
   networkCheck: { status: "matched" },
   balances: { ...balances },
   amountMicroUsdc: 5_000_000,
@@ -31,6 +32,15 @@ const codesOf = (input: PreflightInput): string[] | "OK" => {
 describe("preflight evaluation (BER-139)", () => {
   it("passes when everything is sufficient", () => {
     expect(evaluatePreflight(base)).toEqual({ ok: true });
+  });
+
+  it("rejects unsupported wallets even when connected (Codex PR #11)", () => {
+    expect(codesOf({ ...base, walletName: "Solflare" })).toEqual([
+      "UNSUPPORTED_WALLET",
+    ]);
+    expect(codesOf({ ...base, walletName: null })).toEqual([
+      "UNSUPPORTED_WALLET",
+    ]);
   });
 
   it("requires a connected wallet first", () => {
