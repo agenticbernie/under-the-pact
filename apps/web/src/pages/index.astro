@@ -1,5 +1,8 @@
 ---
+import { WalletRoot } from "../components/WalletPanel";
 const apiUrl = import.meta.env.PUBLIC_API_URL ?? "http://localhost:8787";
+const solanaNetwork = import.meta.env.PUBLIC_SOLANA_NETWORK ?? "devnet";
+const solanaRpc = import.meta.env.PUBLIC_SOLANA_RPC_URL ?? "";
 ---
 
 <html lang="en">
@@ -34,6 +37,11 @@ const apiUrl = import.meta.env.PUBLIC_API_URL ?? "http://localhost:8787";
       Confirmation-first AI payment agent for controlled USDC payments on Solana.
       Describe the payment below. Nothing here creates a transaction (Sprint Gate).
     </p>
+    <div class="card">
+      <h3>0. Connect wallet (BER-138)</h3>
+      <p class="hint">One supported wallet: Phantom. Keys never leave your wallet — Pact only sees the public address.</p>
+      <WalletRoot apiUrl={apiUrl} network={solanaNetwork} rpcOverride={solanaRpc} client:only="react" />
+    </div>
     <div class="card">
       <h3>1. Payment request (BER-130)</h3>
       <form id="req-form">
