@@ -283,3 +283,31 @@ unsigned details for inspection; signing lands in BER-141.
   values fail boot loudly.
 - Web build card: preflight failures keep the confirmed intent for retry;
   build responses render only for the still-current intent + sender.
+
+## Wallet signing flow (BER-141, C-007)
+
+`SigningPanel` island: enabled only when confirmation + preflight +
+unsigned build line up on the same intent, sender, and connected wallet
+(pure canSign gate, re-checked at click time). The wallet popup signs
+the user-reviewed transaction — Pact never sees a private key, only the
+signed bytes (emitted as `pact:signed` for BER-142 submission) or a
+rejection. States: signing / signed-ready / rejected-safe /
+error — rejection creates no payment and submits nothing. Stale
+responses are discarded by generation guard.
+
+## Signing review hardening (PR #13, Qodo + Codex)
+
+- Browser-safe base64 helpers (no Node Buffer in shipped UI code) plus the
+  `buffer` polyfill for web3.js internals at the island entry — the popup
+  previously never opened in real browsers.
+- Post-sign verification: message bytes must equal the reviewed build,
+  feePayer must equal the expected sender, and signatures must verify
+  cryptographically; otherwise the result is an error, never pact:signed.
+- Rejection is proven by code/message (4001 etc.), never by the generic
+  WalletSignTransactionError class alone.
+- Staged intent carries its expiry: signing past it is blocked (execution
+  would reject as EXPIRED anyway).
+- Wallet changes retire staged/signed state; rebuilds invalidate via
+  pact:build-invalidated; all async responses are generation-guarded.
+- Tests may use ephemeral in-memory keypairs (never shipped); shipped
+  sources must contain no key material at all.
