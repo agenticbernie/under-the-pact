@@ -858,6 +858,7 @@ export const createApp = (opts: AppOptions = {}) => {
       const broadcast = yield* submitSignedTransaction({
         signedTransaction: raw.signedTransaction as string,
         reads: opts.solanaReads ?? liveSolanaReads(cfg.solanaRpcUrl),
+        network: gated.intent.network,
       }).pipe(
         Effect.map((r) => ({ _tag: "Sent", signature: r.signature }) as const),
         Effect.catchAll((error) =>

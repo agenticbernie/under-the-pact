@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto"
 import { Context, Effect, Layer } from "effect"
 import { Transaction } from "@solana/web3.js"
-import { PolicyErrorCode } from "@pact/shared"
+import { PolicyErrorCode, type SolanaNetwork } from "@pact/shared"
 import { PolicyError } from "../policy/engine.js"
-import type { SolanaReads } from "./txbuilder.js"
+import { assertRpcCluster, type SolanaReads } from "./txbuilder.js"
 
 /**
  * BER-142 / C-010 Transaction Submission Service.
@@ -64,12 +64,16 @@ export interface SubmitInput {
   /** Base64 user-signed transaction (must carry ≥1 signature). */
   signedTransaction: string
   reads: SolanaReads
+  /** Intent network the backend RPC must serve (genesis-checked). */
+  network: SolanaNetwork
 }
 
 export const submitSignedTransaction = (
   input: SubmitInput
 ): Effect.Effect<{ signature: string }, PolicyError> =>
   Effect.gen(function* () {
+    // Backend cluster guard runs before any broadcast (Codex P1 PR #14).
+    yield* assertRpcCluster(input.reads, input.network)
     // Decodable + actually signed: unsigned payloads are rejected here,
     // never broadcast.
     const raw = yield* Effect.try({

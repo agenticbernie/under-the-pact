@@ -31,6 +31,7 @@ const stubReads = (overrides: Partial<SolanaReads> = {}): SolanaReads => ({
     "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY",
   getAccount: async () => true,
   getMintDecimals: async () => 6,
+  getGenesisHash: async () => "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG",
   sendRawTransaction: async () => "SIG_test_11111111111111111111111111111111",
   ...overrides,
 })

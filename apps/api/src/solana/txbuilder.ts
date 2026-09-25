@@ -13,7 +13,9 @@ import {
 } from "@solana/spl-token"
 import {
   PolicyErrorCode,
+  genesisMatchesNetwork,
   type MerchantConfig,
+  type SolanaNetwork,
 } from "@pact/shared"
 import { PolicyError } from "../policy/engine.js"
 import type { ConfirmedIntent } from "../intent/confirm.js"
@@ -39,7 +41,44 @@ export interface SolanaReads {
   getMintDecimals(mint: string): Promise<number>
   /** Broadcast signed bytes; returns the transaction signature. */
   sendRawTransaction(serialized: Uint8Array): Promise<string>
+  /** Genesis hash of the connected cluster. */
+  getGenesisHash(): Promise<string>
 }
+
+/** Genesis is immutable: cache per reads object for the process lifetime. */
+const genesisCache = new WeakMap<object, string>()
+
+/**
+ * Backend cluster guard (Codex P1 PR #14): the RPC behind build/submit
+ * must serve the configured intent network. Solana messages carry no
+ * chain identifier, so a mainnet-overridden SOLANA_RPC_URL would
+ * otherwise sign on one displayed network and land on another.
+ * Fail-closed INTERNAL_ERROR (server misconfiguration, logged).
+ */
+export const assertRpcCluster = (
+  reads: SolanaReads,
+  network: SolanaNetwork
+): Effect.Effect<void, PolicyError> =>
+  Effect.gen(function* () {
+    const cached = genesisCache.get(reads)
+    const hash =
+      cached ??
+      (yield* Effect.tryPromise({
+        try: () => reads.getGenesisHash(),
+        catch: () =>
+          new PolicyError({
+            code: PolicyErrorCode.INTERNAL_ERROR,
+            message: "Could not verify the backend RPC cluster.",
+          }),
+      }))
+    genesisCache.set(reads, hash)
+    if (!genesisMatchesNetwork(network, hash)) {
+      return yield* fail(
+        PolicyErrorCode.INTERNAL_ERROR,
+        `Backend RPC serves an unexpected cluster (expected ${network}).`
+      )
+    }
+  })
 
 export const liveSolanaReads = (rpcUrl: string): SolanaReads => {
   const connection = new Connection(rpcUrl, "confirmed")
@@ -64,6 +103,7 @@ export const liveSolanaReads = (rpcUrl: string): SolanaReads => {
         skipPreflight: false,
         preflightCommitment: "confirmed",
       }),
+    getGenesisHash: () => connection.getGenesisHash(),
   }
 }
 
@@ -112,6 +152,9 @@ export const buildUsdcTransfer = (
   Effect.gen(function* () {
     const reads = input.reads ?? liveSolanaReads(input.rpcUrl)
     const { intent, merchant } = input
+
+    // Backend cluster first: every subsequent read targets this RPC.
+    yield* assertRpcCluster(reads, intent.network)
 
     // Sender: valid pubkey, and must equal the bound wallet when the
     // intent carries one (wallet bound at parse; mismatch = wrong signer).

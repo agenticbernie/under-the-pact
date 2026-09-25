@@ -12,6 +12,24 @@ export const SolanaNetwork = Schema.Literal("devnet", "testnet", "mainnet-beta")
 export type SolanaNetwork = typeof SolanaNetwork.Type
 
 /**
+ * Genesis hashes identify the actual Solana cluster behind an RPC URL.
+ * Values from the Solana/Agave sources — every cluster differs. Shared
+ * (not web-only) because the backend must verify its own RPC too
+ * (Codex P1 PR #14: a backend mainnet/devnet mismatch is otherwise
+ * invisible — Solana messages carry no chain identifier).
+ */
+export const GENESIS_HASHES: Record<SolanaNetwork, string> = {
+  devnet: "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG",
+  testnet: "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY",
+  "mainnet-beta": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"
+}
+
+export const genesisMatchesNetwork = (
+  network: SolanaNetwork,
+  genesisHash: string
+): boolean => GENESIS_HASHES[network] === genesisHash.trim()
+
+/**
  * Base58-encoded 32-byte Solana public key (wallet or mint).
  * Full format gate lives here so BER-133 (merchant registry) reuses it.
  */

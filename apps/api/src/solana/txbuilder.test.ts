@@ -51,6 +51,7 @@ const stubReads = (overrides: Partial<SolanaReads> = {}): SolanaReads => ({
   getLatestBlockhash: async () => BLOCKHASH,
   getAccount: async () => true,
   getMintDecimals: async () => 6,
+  getGenesisHash: async () => "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG",
   sendRawTransaction: async () => "SIG_test_11111111111111111111111111111111",
   ...overrides,
 })
@@ -301,5 +302,23 @@ describe("verifySignedTransfer (Qodo 1 + Codex P1 PR #14)", () => {
         { ...intent, userWallet: MERCHANT_WALLET } as ConfirmedIntent
       )
     ).toBe("INVALID_REQUEST")
+  })
+})
+
+describe("backend cluster guard on build (Codex P1 PR #14)", () => {
+  it("refuses to build against the wrong cluster", async () => {
+    const exit = await Effect.runPromiseExit(
+      buildUsdcTransfer({
+        intent: confirmedIntent(),
+        sender: SENDER,
+        merchant: merchant as never,
+        rpcUrl: "https://example.test",
+        reads: stubReads({
+          getGenesisHash: async () =>
+            "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+        }),
+      })
+    )
+    expect(exit._tag).toBe("Failure")
   })
 })

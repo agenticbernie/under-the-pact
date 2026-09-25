@@ -34,12 +34,15 @@ const stubReads = (overrides: Partial<SolanaReads> = {}): SolanaReads => ({
   getLatestBlockhash: async () => "B",
   getAccount: async () => true,
   getMintDecimals: async () => 6,
+  getGenesisHash: async () => "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG",
   sendRawTransaction: async () => "SIG_live_11111111111111111111111111111111",
   ...overrides,
 })
 
 const codeOf = async (signedTransaction: string, reads: SolanaReads = stubReads()) => {
-  const exit = await Effect.runPromiseExit(submitSignedTransaction({ signedTransaction, reads }))
+  const exit = await Effect.runPromiseExit(
+    submitSignedTransaction({ signedTransaction, reads, network: "devnet" })
+  )
   if (exit._tag === "Success") {
     return "OK"
   }
@@ -56,6 +59,7 @@ describe("submission service (BER-142)", () => {
     const exit = await Effect.runPromiseExit(
       submitSignedTransaction({
         signedTransaction: signedPayload(),
+        network: "devnet",
         reads: stubReads({
           sendRawTransaction: async (bytes: Uint8Array) => {
             sent.push(Buffer.from(bytes).toString("base64"))
@@ -117,5 +121,28 @@ describe("attempt log + ids", () => {
       "attempt_2",
     ])
     expect(createAttemptId()).toMatch(/^attempt_[0-9a-f]{32}$/)
+  })
+})
+
+describe("backend cluster guard (Codex P1 PR #14)", () => {
+  it("blocks broadcast on the wrong cluster without touching the network", async () => {
+    let called = false
+    const exit = await Effect.runPromiseExit(
+      submitSignedTransaction({
+        signedTransaction:
+          "e30=" /* decodable check happens after cluster guard */,
+        network: "devnet",
+        reads: stubReads({
+          getGenesisHash: async () =>
+            "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+          sendRawTransaction: async () => {
+            called = true
+            return "SIG_x"
+          },
+        }),
+      })
+    )
+    expect(exit._tag).toBe("Failure")
+    expect(called).toBe(false)
   })
 })
