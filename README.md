@@ -237,7 +237,6 @@ show an alert, never a silent match). Disconnecting an unsupported
 wallet also clears the adapter selection so the chooser reopens.
 
 ## Preflight checks (BER-139, C-008)
-
 Client-side reads after CONFIRMED (`PreflightPanel` island, listening for
 `pact:confirmed`): wallet connected, cluster genesis match, SOL fee
 reserve (>= 0.005), USDC token account + balance vs the approved amount.
@@ -251,3 +250,36 @@ button retries the stored intent. Stable codes (WALLET_NOT_CONNECTED, WRONG_NETW
 RPC_UNREACHABLE, INSUFFICIENT_SOL, NO_USDC_ACCOUNT, INSUFFICIENT_USDC)
 with actionable messages; failed preflight blocks signing (BER-141 gates
 on it). Pure reads only — nothing here can create a transaction.
+
+## Transaction builder (BER-140, C-009)
+
+Deterministic server-side construction: sealed CONFIRMED intent (gated
+via assertConfirmed) + fresh policy re-run + sender + merchant config +
+chain reads (mint decimals, merchant ATA existence, blockhash) → unsigned
+base64 `Transaction` (TransferChecked, feePayer = sender). Served at
+`POST /api/tx/build {intent, sender}`: 400 forged/malformed, 422 policy
+and MERCHANT_ATA_MISSING (merchant ATA must be pre-created before the
+demo — creating it inside the payment would silently charge rent),
+500 + logged on RPC/config failures.
+
+The builder can never sign or broadcast (no signer imports; empty
+signatures by construction) and derives every execution-critical field
+from the sealed intent + merchant config — including an exact integer
+micro-USDC amount with chain-read decimals. Sender must equal the bound
+wallet when the intent carries one. The web build card renders the full
+unsigned details for inspection; signing lands in BER-141.
+
+## Review hardening (PR #12, Qodo + Codex)
+
+- Mint precision: builder requires exactly 6 decimals (micro-USDC is
+  six-decimal by definition); anything else is INTERNAL_ERROR, and
+  builder INVALID_REQUEST (e.g. malformed sender) maps to 400.
+- CONFIRMED stays out of public validation: re-checks at build go through
+  internal checkPolicyForBuild (no reseal/record), so the lifecycle store
+  never disagrees with a returned snapshot.
+- Lifecycle store: LIFECYCLE_STORE selects the backend (memory in Sprint 2;
+  Postgres in Sprint 3 with no caller changes). Memory is per isolate —
+  demo locally (single process) or accept single-isolate behavior; unknown
+  values fail boot loudly.
+- Web build card: preflight failures keep the confirmed intent for retry;
+  build responses render only for the still-current intent + sender.

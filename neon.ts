@@ -23,7 +23,7 @@ export default defineConfig({
             process.env["SOLANA_RPC_URL"] ?? "https://api.devnet.solana.com",
           USDC_MINT:
             process.env["USDC_MINT"] ??
-            "4zMMC9sEqf9MKyRbf3Tx3sQAr1BLWnCQcHjEXtGbm4o",
+            "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
           MERCHANT_ID: process.env["MERCHANT_ID"] ?? "pact-coffee-demo",
           // Required at runtime (pubkey-validated). Deploy with
           // `neon deploy --env .env.production` so this resolves from file.

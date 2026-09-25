@@ -30,7 +30,7 @@ describe("merchant registry (BER-133)", () => {
     )
     expect(merchant.supportedTokenMint).toBe(
       process.env["USDC_MINT"] ??
-        "4zMMC9sEqf9MKyRbf3Tx3sQAr1BLWnCQcHjEXtGbm4o"
+        "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
     )
     expect(merchant.spendingLimitUsdc).toBe(50)
   })

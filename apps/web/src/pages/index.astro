@@ -28,6 +28,7 @@ const solanaRpc = import.meta.env.PUBLIC_SOLANA_RPC_URL ?? "";
       .row { display: flex; gap: 12px; margin-top: 12px; }
       button.secondary { background: #fff; color: #111; }
       #summary-card[hidden] { display: none; }
+      #build-card[hidden] { display: none; }
       #confirm-result { font-weight: 600; min-height: 1.5em; }
     </style>
   </head>
@@ -74,6 +75,12 @@ const solanaRpc = import.meta.env.PUBLIC_SOLANA_RPC_URL ?? "";
         <button id="btn-cancel" class="secondary">Cancel</button>
       </div>
       <div id="confirm-result" aria-live="polite"></div>
+    </div>
+    <div class="card" id="build-card" hidden>
+      <h3>4. Unsigned transaction — inspect before signing (BER-140)</h3>
+      <p class="hint">Built server-side from the sealed CONFIRMED intent. Verify every field — signing lands in BER-141.</p>
+      <p><button id="btn-build">Build transaction</button></p>
+      <div id="build-result" aria-live="polite"></div>
     </div>
     <div class="card">
       <div>Backend: <code id="api-url">{apiUrl}</code></div>
@@ -145,11 +152,144 @@ const solanaRpc = import.meta.env.PUBLIC_SOLANA_RPC_URL ?? "";
 
       function hideSummary() {
         currentIntent = null;
+        clearBuildState();
         confirmResult.textContent = "";
         summaryCard.hidden = true;
         // Retire any preflight tied to the old summary (BER-139).
         window.dispatchEvent(new Event("pact:reset"));
       }
+
+      // BER-140: unsigned-transaction build state. Holds the sealed
+      // CONFIRMED intent plus the preflight-approved sender; cleared with
+      // the summary. Signing itself lands in BER-141.
+      type ConfirmedIntentView = ValidatedIntentView & { status: string };
+      let confirmedIntent: ConfirmedIntentView | null = null;
+      let buildSender: string | null = null;
+      const buildCard = document.getElementById("build-card") as HTMLDivElement;
+      const buildResult = document.getElementById("build-result") as HTMLDivElement;
+      const btnBuild = document.getElementById("btn-build") as HTMLButtonElement;
+
+      function hideBuild() {
+        // UI-only: hides the card and revokes the sender, but KEEPS the
+        // confirmed intent so a later successful preflight can unlock
+        // building without restarting the payment (Qodo PR #12).
+        buildSender = null;
+        buildResult.textContent = "";
+        btnBuild.disabled = true;
+        buildCard.hidden = true;
+      }
+
+      function clearBuildState() {
+        // Full reset: only on summary retire/replace.
+        confirmedIntent = null;
+        hideBuild();
+      }
+
+      window.addEventListener("pact:preflight", (e) => {
+        const detail = (e as CustomEvent<{
+          ok: boolean;
+          intentId: string | null;
+          pubkey: string;
+        }>).detail;
+        if (
+          !detail.ok ||
+          confirmedIntent === null ||
+          detail.intentId !== confirmedIntent.intentId
+        ) {
+          hideBuild();
+          return;
+        }
+        buildSender = detail.pubkey;
+        buildResult.textContent = "";
+        btnBuild.disabled = false;
+        buildCard.hidden = false;
+      });
+
+      btnBuild.addEventListener("click", () => {
+        void (async () => {
+          if (confirmedIntent === null || buildSender === null) {
+            return;
+          }
+          // Generation guard (Qodo PR #12): render only if the same
+          // intent + sender are still current when the response lands —
+          // a wallet switch mid-flight must not display a stale build.
+          const sentIntentId = confirmedIntent.intentId;
+          const sentSender = buildSender;
+          const stillCurrent = () =>
+            confirmedIntent?.intentId === sentIntentId &&
+            buildSender === sentSender;
+          btnBuild.disabled = true;
+          buildResult.textContent = "Building unsigned transaction…";
+          try {
+            const res = await fetch(`${apiUrl}/api/tx/build`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                intent: confirmedIntent,
+                sender: buildSender,
+              }),
+            });
+            if (!stillCurrent()) {
+              // Wallet/intent moved on mid-flight: discard the response.
+              return;
+            }
+            const body = (await res.json()) as {
+              ok: boolean;
+              code?: string;
+              message?: string;
+              transaction?: {
+                sender: string;
+                senderAta: string;
+                recipientAta: string;
+                mint: string;
+                amountMicroUsdc: number;
+                blockhash: string;
+              };
+            };
+            if (res.ok && body.transaction) {
+              const t = body.transaction;
+              buildResult.innerHTML = "";
+              const dl = document.createElement("dl");
+              dl.className = "summary";
+              const rows: Array<[string, string]> = [
+                ["Sender", t.sender],
+                ["Sender ATA", t.senderAta],
+                ["Recipient ATA", t.recipientAta],
+                ["Mint", t.mint],
+                ["Amount", `${formatMicroUsdc(t.amountMicroUsdc)} USDC`],
+                ["Blockhash", `${t.blockhash.slice(0, 8)}…`],
+              ];
+              for (const [k, v] of rows) {
+                const dt = document.createElement("dt");
+                dt.textContent = k;
+                const dd = document.createElement("dd");
+                const code = document.createElement("code");
+                code.textContent = v;
+                code.title = v;
+                dd.appendChild(code);
+                dl.appendChild(dt);
+                dl.appendChild(dd);
+              }
+              buildResult.appendChild(dl);
+              const note = document.createElement("p");
+              note.className = "hint";
+              note.textContent =
+                "Unsigned transaction built — inspect it above. Wallet signing lands in BER-141; nothing is signed or submitted.";
+              buildResult.appendChild(note);
+            } else {
+              if (stillCurrent()) {
+                buildResult.textContent = `Build failed: ${body.message || body.code || res.status}.`;
+                btnBuild.disabled = false;
+              }
+            }
+          } catch (err) {
+            if (stillCurrent()) {
+              buildResult.textContent = "Backend not reachable — start pnpm dev:api.";
+              btnBuild.disabled = false;
+            }
+          }
+        })();
+      });
 
       async function decide(decision: "confirm" | "cancel") {
         if (!currentIntent) {
@@ -172,7 +312,20 @@ const solanaRpc = import.meta.env.PUBLIC_SOLANA_RPC_URL ?? "";
             ok: boolean;
             code?: string;
             message?: string;
-            intent?: { status: string };
+            intent?: {
+              intentId: string;
+              status: string;
+              merchantId: string;
+              amountMicroUsdc: number;
+              token: string;
+              tokenMint: string;
+              network: string;
+              recipient: string;
+              recipientReference?: string;
+              purpose?: string;
+              expiry: string;
+              seal: string;
+            };
             event?: { type: string };
           };
           if (!stillCurrent()) {
@@ -181,6 +334,9 @@ const solanaRpc = import.meta.env.PUBLIC_SOLANA_RPC_URL ?? "";
           }
           if (res.ok && body.intent && body.event) {
             if (body.event.type === "CONFIRMED") {
+              // Keep the sealed CONFIRMED intent for the build step
+              // (BER-140); preflight gates signing readiness first.
+              confirmedIntent = body.intent as ConfirmedIntentView;
               // Sprint exit: awaiting explicit wallet signing (Sprint 2).
               // No transaction exists — nothing here can create or sign one.
               confirmResult.textContent =

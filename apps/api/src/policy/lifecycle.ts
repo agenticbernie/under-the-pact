@@ -81,3 +81,24 @@ export class LifecycleStore extends Context.Tag("LifecycleStore")<
 /** Fresh isolated memory layer: per app instance (tests) / isolate (prod). */
 export const lifecycleMemoryLayer = (): Layer.Layer<LifecycleStore> =>
   Layer.succeed(LifecycleStore, createMemoryLifecycleStore())
+
+/**
+ * Production selector (Qodo PR #12 problem 3): LIFECYCLE_STORE chooses the
+ * backend. Sprint 2 ships memory only — correct for local single-process
+ * runs, but each Neon isolate holds its own copy, so validate > confirm >
+ * build landing on different isolates cannot share records. Postgres
+ * arrives in Sprint 3 (BER-145/146) behind this same variable with no
+ * changes to confirm.ts/app.ts. Anything but "memory" fails loudly now
+ * instead of silently degrading later.
+ */
+export const lifecycleStoreLayerFromEnv = (): Layer.Layer<LifecycleStore> => {
+  const backend = (process.env["LIFECYCLE_STORE"] ?? "memory")
+    .trim()
+    .toLowerCase()
+  if (backend !== "memory") {
+    throw new Error(
+      `Unsupported LIFECYCLE_STORE="${backend}": Sprint 3 adds postgres; memory is the only Sprint 2 backend.`
+    )
+  }
+  return lifecycleMemoryLayer()
+}

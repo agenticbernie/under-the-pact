@@ -12,7 +12,7 @@ const TEST_SEAL_SECRET = "test-seal-secret-000000000000000000000001"
 
 const ctx: ParserContext = {
   network: "devnet",
-  tokenMint: "4zMMC9sEqf9MKyRbf3Tx3sQAr1BLWnCQcHjEXtGbm4o",
+  tokenMint: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
   recipientWallet: "11111111111111111111111111111111",
   merchantId: "pact-coffee-demo",
   merchantDisplayName: "Pact Coffee Demo",

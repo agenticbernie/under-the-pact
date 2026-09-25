@@ -224,7 +224,7 @@ describe("config network defaults (Codex P1)", () => {
         return cfg.usdcMint
       }).pipe(Effect.provide(PactConfigLive))
     )
-    expect(mint).toBe("4zMMC9sEqf9MKyRbf3Tx3sQAr1BLWnCQcHjEXtGbm4o")
+    expect(mint).toBe("4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU")
   })
 
   it("mainnet-beta never inherits the devnet mint", async () => {
