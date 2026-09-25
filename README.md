@@ -268,3 +268,18 @@ from the sealed intent + merchant config — including an exact integer
 micro-USDC amount with chain-read decimals. Sender must equal the bound
 wallet when the intent carries one. The web build card renders the full
 unsigned details for inspection; signing lands in BER-141.
+
+## Review hardening (PR #12, Qodo + Codex)
+
+- Mint precision: builder requires exactly 6 decimals (micro-USDC is
+  six-decimal by definition); anything else is INTERNAL_ERROR, and
+  builder INVALID_REQUEST (e.g. malformed sender) maps to 400.
+- CONFIRMED stays out of public validation: re-checks at build go through
+  internal checkPolicyForBuild (no reseal/record), so the lifecycle store
+  never disagrees with a returned snapshot.
+- Lifecycle store: LIFECYCLE_STORE selects the backend (memory in Sprint 2;
+  Postgres in Sprint 3 with no caller changes). Memory is per isolate —
+  demo locally (single process) or accept single-isolate behavior; unknown
+  values fail boot loudly.
+- Web build card: preflight failures keep the confirmed intent for retry;
+  build responses render only for the still-current intent + sender.

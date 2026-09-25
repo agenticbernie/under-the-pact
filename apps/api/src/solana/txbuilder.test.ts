@@ -165,4 +165,17 @@ describe("USDC transaction builder (BER-140)", () => {
       )
     ).toBe("INTERNAL_ERROR")
   })
+
+  it("rejects non-six-decimal mints instead of mispricing (Qodo/Codex PR #12)", async () => {
+    for (const decimals of [0, 5, 9]) {
+      expect(
+        await codeOf(
+          confirmedIntent(),
+          SENDER,
+          stubReads({ getMintDecimals: async () => decimals })
+        ),
+        `decimals ${decimals}`
+      ).toBe("INTERNAL_ERROR")
+    }
+  })
 })

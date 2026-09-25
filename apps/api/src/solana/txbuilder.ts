@@ -146,7 +146,10 @@ export const buildUsdcTransfer = (
       )
     }
 
-    // Decimals from chain, never hardcoded; amount stays integer micro units.
+    // Decimals must be exactly six: amountMicroUsdc is defined as fixed
+    // six-decimal micro-USDC everywhere (schema, UI, policy). Any other
+    // precision would silently transfer a different quantity (Qodo/Codex
+    // PR #12: 5_000_000 at 5 decimals = 50 tokens, at 9 = 0.005).
     const decimals = yield* Effect.tryPromise({
       try: () => reads.getMintDecimals(intent.tokenMint),
       catch: () =>
@@ -156,12 +159,12 @@ export const buildUsdcTransfer = (
         }),
     }).pipe(
       Effect.flatMap((d) =>
-        Number.isInteger(d) && d >= 0 && d <= 9
+        d === 6
           ? Effect.succeed(d)
           : Effect.fail(
               new PolicyError({
                 code: PolicyErrorCode.INTERNAL_ERROR,
-                message: "USDC mint decimals out of range.",
+                message: `USDC mint reports ${d} decimals; Pact requires exactly 6.`,
               })
             )
       )

@@ -25,9 +25,9 @@ import {
 } from "./intent/confirm.js"
 import {
   LifecycleStore,
-  lifecycleMemoryLayer
+  lifecycleStoreLayerFromEnv
 } from "./policy/lifecycle.js"
-import { validateIntent } from "./policy/engine.js"
+import { checkPolicyForBuild, validateIntent } from "./policy/engine.js"
 import { assertConfirmed } from "./intent/confirm.js"
 import { buildUsdcTransfer, type SolanaReads } from "./solana/txbuilder.js"
 
@@ -50,8 +50,10 @@ export interface AppOptions {
 export const createApp = (opts: AppOptions = {}) => {
   const app = new Hono()
   // One store per app instance: isolated in tests, single copy per
-  // process/isolate in production (Sprint 3 Postgres replaces it).
-  const lifecycle = opts.lifecycleLayer ?? lifecycleMemoryLayer()
+  // process/isolate in production. LIFECYCLE_STORE selects the backend
+  // (memory in Sprint 2; Sprint 3 adds postgres). Unknown values throw
+  // loudly at boot instead of silently degrading.
+  const lifecycle = opts.lifecycleLayer ?? lifecycleStoreLayerFromEnv()
 
   // FE origins: local Astro + Cloudflare Pages preview/prod (wired via env later)
   app.use(
@@ -584,8 +586,10 @@ export const createApp = (opts: AppOptions = {}) => {
           }
         } as const
       }
-      // Fresh policy re-run: config may have changed since confirmation.
-      const rechecked = yield* validateIntent(gated.intent, {
+      // Fresh policy re-check (no reseal, no record): config may have
+      // changed since confirmation. checkPolicyForBuild answers only
+      // "still clean?" over the gated snapshot.
+      const rechecked = yield* checkPolicyForBuild(gated.intent, {
         merchant: cfg.merchant
       }).pipe(
         Effect.map((intent) => ({ _tag: "Clean", intent }) as const),
@@ -611,8 +615,10 @@ export const createApp = (opts: AppOptions = {}) => {
           }
         } as const
       }
+      // Builder INVALID_REQUEST (e.g. malformed sender) is a 400 like other
+      // malformed inputs — not a 422 policy verdict (Codex PR #12).
       const built = yield* buildUsdcTransfer({
-        intent: { ...rechecked.intent, status: "CONFIRMED" as const },
+        intent: gated.intent,
         sender: raw.sender as string,
         merchant: cfg.merchant,
         rpcUrl: cfg.solanaRpcUrl,
@@ -624,8 +630,14 @@ export const createApp = (opts: AppOptions = {}) => {
         )
       )
       if (built._tag === "Rejected") {
+        // Malformed builder input (e.g. bad sender) is a 400 like other
+        // malformed inputs — not a 422 policy verdict (Codex PR #12).
         const status =
-          built.error.code === PolicyErrorCode.INTERNAL_ERROR ? 500 : 422
+          built.error.code === PolicyErrorCode.INTERNAL_ERROR
+            ? 500
+            : built.error.code === PolicyErrorCode.INVALID_REQUEST
+              ? 400
+              : 422
         if (status === 500) {
           console.error("[pact-api] build failed:", built.error.message)
         }
