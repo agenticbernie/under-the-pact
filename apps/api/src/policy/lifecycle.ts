@@ -16,7 +16,7 @@ import { Context, Layer } from "effect"
  * documented, replaced by Postgres in Sprint 3).
  */
 
-export type StoredStatus = "VALIDATED" | "CONFIRMED" | "CANCELLED"
+export type StoredStatus = "VALIDATED" | "CONFIRMED" | "CANCELLED" | "SUBMITTED"
 
 export interface LifecycleSnapshot {
   status: StoredStatus
@@ -35,14 +35,21 @@ export interface LifecycleStoreApi {
    */
   recordValidated(intentId: string, seal: string, updatedAt: string): void
   /**
-   * Atomically move VALIDATED -> next. Returns false unless the current
-   * record exists and is still VALIDATED (single-use). Synchronous:
-   * atomic on Node's single thread; Sprint 3 uses a SERIALIZABLE
-   * transaction / advisory lock for the same guarantee across processes.
+   * Atomically move an expected state -> next. Returns false unless the
+   * current record exists and still holds the expected status (single-use).
+   * Confirmation consumes VALIDATED; submission consumes CONFIRMED
+   * (BER-142: same intent can never submit twice). Synchronous: atomic on
+   * Node's single thread; Sprint 3 uses a SERIALIZABLE transaction /
+   * advisory lock for the same guarantee across processes.
    */
   consume(
     intentId: string,
-    next: { status: "CONFIRMED" | "CANCELLED"; seal: string; updatedAt: string }
+    expected: "VALIDATED" | "CONFIRMED",
+    next: {
+      status: "CONFIRMED" | "CANCELLED" | "SUBMITTED"
+      seal: string
+      updatedAt: string
+    }
   ): boolean
 }
 
@@ -57,9 +64,9 @@ export const createMemoryLifecycleStore = (): LifecycleStoreApi => {
       }
       records.set(intentId, { status: "VALIDATED", seal, updatedAt })
     },
-    consume: (intentId, next) => {
+    consume: (intentId, expected, next) => {
       const current = records.get(intentId)
-      if (current === undefined || current.status !== "VALIDATED") {
+      if (current === undefined || current.status !== expected) {
         return false
       }
       records.set(intentId, { ...next, updatedAt: next.updatedAt })

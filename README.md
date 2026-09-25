@@ -311,3 +311,17 @@ responses are discarded by generation guard.
   pact:build-invalidated; all async responses are generation-guarded.
 - Tests may use ephemeral in-memory keypairs (never shipped); shipped
   sources must contain no key material at all.
+
+## Transaction submission (BER-142, C-010)
+
+`POST /api/tx/submit {intent, signedTransaction}`: schema decode >
+seal verify > execution gate (stored CONFIRMED snapshot) > broadcast
+signed bytes (simulation-enabled send) > consume CONFIRMED→SUBMITTED
+(single-use: replays get DUPLICATE_INTENT) > record PaymentAttempt.
+Unsigned/undecodable payloads are 400 and never broadcast; RPC failures
+record FAILED attempts (intent stays CONFIRMED for retry) and return 500,
+never success. The response carries the signature with status SUBMITTED —
+pending only, never verified success (Sprint 3 verifies on-chain).
+Attempts live in-process in Sprint 2 (Postgres in Sprint 3). The web
+submit card shows pending + signature with an explicit not-success
+warning; failures keep retry available.

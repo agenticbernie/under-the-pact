@@ -22,6 +22,7 @@ const stubReads: SolanaReads = {
   getLatestBlockhash: async () => BLOCKHASH,
   getAccount: async () => true,
   getMintDecimals: async () => 6,
+  sendRawTransaction: async () => "SIG_test_11111111111111111111111111111111",
 }
 
 /** Full chain through the endpoints: parse-shape > validate > confirm. */

@@ -36,6 +36,8 @@ export interface SolanaReads {
   getLatestBlockhash(): Promise<string>
   getAccount(publicKey: string): Promise<boolean>
   getMintDecimals(mint: string): Promise<number>
+  /** Broadcast signed bytes; returns the transaction signature. */
+  sendRawTransaction(serialized: Uint8Array): Promise<string>
 }
 
 export const liveSolanaReads = (rpcUrl: string): SolanaReads => {
@@ -47,8 +49,6 @@ export const liveSolanaReads = (rpcUrl: string): SolanaReads => {
       connection
         .getAccountInfo(new PublicKey(publicKey))
         .then((info: AccountInfo<Buffer> | null) => info !== null),
-    // getTokenSupply (not parsed methods): works on limited public RPCs,
-    // and returns decimals directly.
     getMintDecimals: (mint: string) =>
       connection.getTokenSupply(new PublicKey(mint)).then((supply) => {
         const decimals = supply.value.decimals
@@ -56,6 +56,12 @@ export const liveSolanaReads = (rpcUrl: string): SolanaReads => {
           throw new Error("mint decimals unreadable")
         }
         return decimals
+      }),
+    // Simulation-enabled send: the RPC pre-checks before accepting.
+    sendRawTransaction: (serialized: Uint8Array) =>
+      connection.sendRawTransaction(serialized, {
+        skipPreflight: false,
+        preflightCommitment: "confirmed",
       }),
   }
 }

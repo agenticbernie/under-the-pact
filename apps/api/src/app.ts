@@ -29,7 +29,17 @@ import {
 } from "./policy/lifecycle.js"
 import { checkPolicyForBuild, validateIntent } from "./policy/engine.js"
 import { assertConfirmed } from "./intent/confirm.js"
-import { buildUsdcTransfer, type SolanaReads } from "./solana/txbuilder.js"
+import {
+  buildUsdcTransfer,
+  liveSolanaReads,
+  type SolanaReads,
+} from "./solana/txbuilder.js"
+import {
+  AttemptLog,
+  attemptMemoryLayer,
+  createAttemptId,
+  submitSignedTransaction,
+} from "./solana/submit.js"
 
 /**
  * Hono skeleton (BER-129).
@@ -43,6 +53,8 @@ export interface AppOptions {
   llmLayer?: Layer.Layer<LlmClient>
   /** Override the lifecycle store in tests — one fresh store per app. */
   lifecycleLayer?: Layer.Layer<LifecycleStore>
+  /** Override the attempt log in tests — one fresh log per app. */
+  attemptLayer?: Layer.Layer<AttemptLog>
   /** Override Solana reads in tests — production reads live RPC. */
   solanaReads?: SolanaReads
 }
@@ -54,6 +66,7 @@ export const createApp = (opts: AppOptions = {}) => {
   // (memory in Sprint 2; Sprint 3 adds postgres). Unknown values throw
   // loudly at boot instead of silently degrading.
   const lifecycle = opts.lifecycleLayer ?? lifecycleStoreLayerFromEnv()
+  const attempts = opts.attemptLayer ?? attemptMemoryLayer()
 
   // FE origins: local Astro + Cloudflare Pages preview/prod (wired via env later)
   app.use(
@@ -659,6 +672,194 @@ export const createApp = (opts: AppOptions = {}) => {
       program.pipe(
         Effect.provide(PactConfigLive),
         Effect.provide(lifecycle)
+      )
+    )
+    if (out.status === 200) {
+      return c.json(out.body, 200)
+    }
+    if (out.status === 422) {
+      return c.json(out.body, 422)
+    }
+    if (out.status === 400) {
+      return c.json(out.body, 400)
+    }
+    return c.json(out.body, 500)
+  })
+
+  // BER-142: submit the user-signed transaction (C-010).
+  // Trust chain: schema decode -> seal verify -> execution gate (stored
+  // CONFIRMED snapshot) -> broadcast signed bytes -> consume to SUBMITTED
+  // -> record attempt. A signature proves SUBMISSION ONLY — never success
+  // (verification is Sprint 3, BER-143/144). Failures record FAILED
+  // attempts and return failure; replays get DUPLICATE_INTENT.
+  app.post("/api/tx/submit", async (c) => {
+    let body: unknown
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json(
+        {
+          ok: false,
+          code: PolicyErrorCode.INVALID_REQUEST,
+          message: "Request body must be JSON with 'intent' and 'signedTransaction'."
+        },
+        400
+      )
+    }
+    const raw =
+      typeof body === "object" && body !== null
+        ? (body as { intent?: unknown; signedTransaction?: unknown })
+        : {}
+    const shaped = Schema.decodeUnknownEither(PaymentIntent)(raw.intent)
+    if (shaped._tag === "Left" || typeof raw.signedTransaction !== "string") {
+      return c.json(
+        {
+          ok: false,
+          code: PolicyErrorCode.INVALID_REQUEST,
+          message: "Body must carry a canonical 'intent' and a 'signedTransaction'."
+        },
+        400
+      )
+    }
+    const program = Effect.gen(function* () {
+      const submittedAt = new Date().toISOString()
+      const sealSecret = yield* Config.string("INTENT_SEAL_SECRET").pipe(
+        Config.withDefault("")
+      )
+      if (sealSecret.trim().length === 0) {
+        console.error("[pact-api] intent sealing not configured")
+        return {
+          status: 500,
+          body: {
+            ok: false,
+            code: PolicyErrorCode.INTERNAL_ERROR,
+            message: "Intent sealing is not configured."
+          }
+        } as const
+      }
+      if (!verifyIntentSeal(shaped.right, sealSecret)) {
+        return {
+          status: 400,
+          body: {
+            ok: false,
+            code: PolicyErrorCode.INVALID_REQUEST,
+            message:
+              "Intent seal invalid — submit intents only as received from /confirm."
+          }
+        } as const
+      }
+      // Fast duplicate check: a SUBMITTED record means this exact flow
+      // already ran. (The full gate below stays authoritative.)
+      const preStore = yield* LifecycleStore
+      const preRecord = preStore.get(shaped.right.intentId)
+      if (preRecord !== undefined && preRecord.status === "SUBMITTED") {
+        return {
+          status: 422,
+          body: {
+            ok: false,
+            code: PolicyErrorCode.DUPLICATE_INTENT,
+            message: "Intent already submitted."
+          }
+        } as const
+      }
+      const gated = yield* assertConfirmed(
+        shaped.right,
+        sealSecret
+      ).pipe(
+        Effect.map((intent) => ({ _tag: "Gated", intent }) as const),
+        Effect.catchAll((error) =>
+          Effect.succeed({ _tag: "Rejected", error } as const)
+        )
+      )
+      if (gated._tag === "Rejected") {
+        const status =
+          gated.error.code === PolicyErrorCode.INTERNAL_ERROR
+            ? 500
+            : gated.error.code === PolicyErrorCode.INVALID_REQUEST
+              ? 400
+              : 422
+        if (status === 500) {
+          console.error("[pact-api] submit gate failed:", gated.error.message)
+        }
+        return { status, body: { ok: false, code: gated.error.code, message: gated.error.message } } as const
+      }
+      const broadcast = yield* submitSignedTransaction({
+        signedTransaction: raw.signedTransaction as string,
+        reads: opts.solanaReads ?? liveSolanaReads((yield* PactConfigService).solanaRpcUrl),
+      }).pipe(
+        Effect.map((r) => ({ _tag: "Sent", signature: r.signature }) as const),
+        Effect.catchAll((error) =>
+          Effect.succeed({ _tag: "Rejected", error } as const)
+        )
+      )
+      const attempts = yield* AttemptLog
+      const store = yield* LifecycleStore
+      if (broadcast._tag === "Rejected") {
+        attempts.record({
+          attemptId: createAttemptId(),
+          intentId: gated.intent.intentId,
+          transactionSignature: null,
+          status: "FAILED",
+          submittedAt,
+          failureReason: broadcast.error.message,
+        })
+        const status =
+          broadcast.error.code === PolicyErrorCode.INTERNAL_ERROR ? 500 : 400
+        if (status === 500) {
+          console.error("[pact-api] submit failed:", broadcast.error.message)
+        }
+        return {
+          status,
+          body: { ok: false, code: broadcast.error.code, message: broadcast.error.message },
+        } as const
+      }
+      // Single-use: the same intent can never submit twice.
+      const finalIntent = sealIntent(
+        { ...gated.intent, status: "SUBMITTED" as const, updatedAt: submittedAt },
+        sealSecret
+      )
+      if (
+        !store.consume(gated.intent.intentId, "CONFIRMED", {
+          status: "SUBMITTED",
+          seal: finalIntent.seal as string,
+          updatedAt: submittedAt,
+        })
+      ) {
+        return {
+          status: 422,
+          body: {
+            ok: false,
+            code: PolicyErrorCode.DUPLICATE_INTENT,
+            message: "Intent already submitted.",
+          },
+        } as const
+      }
+      attempts.record({
+        attemptId: createAttemptId(),
+        intentId: gated.intent.intentId,
+        transactionSignature: broadcast.signature,
+        status: "SUBMITTED",
+        submittedAt,
+        failureReason: null,
+      })
+      return {
+        status: 200,
+        body: {
+          ok: true,
+          attempt: {
+            intentId: gated.intent.intentId,
+            signature: broadcast.signature,
+            status: "SUBMITTED" as const,
+            submittedAt,
+          },
+        },
+      } as const
+    })
+    const out = await Effect.runPromise(
+      program.pipe(
+        Effect.provide(PactConfigLive),
+        Effect.provide(lifecycle),
+        Effect.provide(attempts)
       )
     )
     if (out.status === 200) {

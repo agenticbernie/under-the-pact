@@ -48,6 +48,7 @@ const stubReads = (overrides: Partial<SolanaReads> = {}): SolanaReads => ({
   getLatestBlockhash: async () => BLOCKHASH,
   getAccount: async () => true,
   getMintDecimals: async () => 6,
+  sendRawTransaction: async () => "SIG_test_11111111111111111111111111111111",
   ...overrides,
 })
 

@@ -29,6 +29,8 @@ const solanaRpc = import.meta.env.PUBLIC_SOLANA_RPC_URL ?? "";
       button.secondary { background: #fff; color: #111; }
       #summary-card[hidden] { display: none; }
       #build-card[hidden] { display: none; }
+      #submit-card[hidden] { display: none; }
+      #submit-result { overflow-wrap: anywhere; }
       #confirm-result { font-weight: 600; min-height: 1.5em; }
     </style>
   </head>
@@ -81,6 +83,12 @@ const solanaRpc = import.meta.env.PUBLIC_SOLANA_RPC_URL ?? "";
       <p class="hint">Built server-side from the sealed CONFIRMED intent. Verify every field — signing lands in BER-141.</p>
       <p><button id="btn-build">Build transaction</button></p>
       <div id="build-result" aria-live="polite"></div>
+    </div>
+    <div class="card" id="submit-card" hidden>
+      <h3>6. Submit signed transaction (BER-142)</h3>
+      <p class="hint">Broadcasts what your wallet signed. A signature proves submission only — on-chain verification lands in Sprint 3.</p>
+      <p><button id="btn-submit">Submit to Solana</button></p>
+      <div id="submit-result" aria-live="polite"></div>
     </div>
     <div class="card">
       <div>Backend: <code id="api-url">{apiUrl}</code></div>
@@ -153,6 +161,7 @@ const solanaRpc = import.meta.env.PUBLIC_SOLANA_RPC_URL ?? "";
       function hideSummary() {
         currentIntent = null;
         clearBuildState();
+        hideSubmit();
         confirmResult.textContent = "";
         summaryCard.hidden = true;
         // Retire any preflight tied to the old summary (BER-139).
@@ -303,6 +312,107 @@ const solanaRpc = import.meta.env.PUBLIC_SOLANA_RPC_URL ?? "";
             if (stillCurrent()) {
               buildResult.textContent = "Backend not reachable — start pnpm dev:api.";
               btnBuild.disabled = false;
+            }
+          }
+        })();
+      });
+
+      // BER-142: submit the wallet-signed transaction. Holds the sealed
+      // CONFIRMED intent plus signed bytes; shows pending (signature) or
+      // failure — never success (verification is Sprint 3).
+      type SignedPayload = {
+        intentId: string;
+        sender: string;
+        signedTransaction: string;
+      };
+      let signedPayload: SignedPayload | null = null;
+      const submitCard = document.getElementById("submit-card") as HTMLDivElement;
+      const submitResult = document.getElementById("submit-result") as HTMLDivElement;
+      const btnSubmit = document.getElementById("btn-submit") as HTMLButtonElement;
+
+      function hideSubmit() {
+        signedPayload = null;
+        submitResult.textContent = "";
+        submitCard.hidden = true;
+      }
+
+      window.addEventListener("pact:signed", (e) => {
+        const detail = (e as CustomEvent<SignedPayload>).detail;
+        // Bind to the currently authorized payment only.
+        if (confirmedIntent === null || detail.intentId !== confirmedIntent.intentId) {
+          hideSubmit();
+          return;
+        }
+        signedPayload = detail;
+        submitResult.textContent = "";
+        btnSubmit.disabled = false;
+        submitCard.hidden = false;
+      });
+
+      btnSubmit.addEventListener("click", () => {
+        void (async () => {
+          if (
+            signedPayload === null ||
+            confirmedIntent === null ||
+            signedPayload.intentId !== confirmedIntent.intentId
+          ) {
+            return;
+          }
+          const sent = { ...signedPayload };
+          const stillCurrent = () =>
+            signedPayload?.intentId === sent.intentId &&
+            confirmedIntent?.intentId === sent.intentId;
+          btnSubmit.disabled = true;
+          submitResult.textContent = "Submitting to Solana…";
+          try {
+            const res = await fetch(`${apiUrl}/api/tx/submit`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                intent: confirmedIntent,
+                signedTransaction: sent.signedTransaction,
+              }),
+            });
+            if (!stillCurrent()) {
+              return;
+            }
+            const body = (await res.json()) as {
+              ok: boolean;
+              code?: string;
+              message?: string;
+              attempt?: {
+                intentId: string;
+                signature: string;
+                status: string;
+                submittedAt: string;
+              };
+            };
+            if (!stillCurrent()) {
+              return;
+            }
+            if (res.ok && body.attempt) {
+              const sig = document.createElement("code");
+              sig.textContent = body.attempt.signature;
+              submitResult.innerHTML = "";
+              const p = document.createElement("p");
+              p.textContent = `Submitted — status ${body.attempt.status} at ${body.attempt.submittedAt}. Signature: `;
+              p.appendChild(sig);
+              submitResult.appendChild(p);
+              const warn = document.createElement("p");
+              warn.setAttribute("role", "alert");
+              warn.textContent =
+                "Pending only: a signature proves submission, NOT success. On-chain verification lands in Sprint 3.";
+              submitResult.appendChild(warn);
+              // Submitted: single-use — submitting again is rejected server-side.
+              btnSubmit.disabled = true;
+            } else {
+              submitResult.textContent = `Submission failed (${body.code || res.status}): ${body.message || "retry"}. The payment was not submitted — you may retry.`;
+              btnSubmit.disabled = false;
+            }
+          } catch (err) {
+            if (stillCurrent()) {
+              submitResult.textContent = "Backend not reachable — start pnpm dev:api.";
+              btnSubmit.disabled = false;
             }
           }
         })();
