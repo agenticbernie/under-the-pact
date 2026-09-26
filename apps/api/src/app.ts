@@ -1049,6 +1049,28 @@ export const createApp = (opts: AppOptions = {}) => {
     const program = Effect.gen(function* () {
       const cfg = yield* PactConfigService
       const reads = opts.solanaReads ?? liveSolanaReads(cfg.solanaRpcUrl)
+      // Backend cluster guard first (Codex P1 PR #17): a wrong-cluster RPC
+      // would feed foreign transactions to the verifier or misreport misses.
+      const cluster = yield* assertRpcCluster(reads, cfg.solanaNetwork).pipe(
+        Effect.map(() => ({ _tag: "Clean" }) as const),
+        Effect.catchAll((error) =>
+          Effect.succeed({ _tag: "Rejected", error } as const)
+        )
+      )
+      if (cluster._tag === "Rejected") {
+        console.error(
+          "[pact-api] receipt cluster check failed:",
+          cluster.error.message
+        )
+        return {
+          status: 500,
+          body: {
+            ok: false,
+            code: PolicyErrorCode.INTERNAL_ERROR,
+            message: cluster.error.message,
+          },
+        } as const
+      }
       const outcome = yield* fetchReceipt(raw.signature as string, reads).pipe(
         Effect.map((o) => ({ _tag: "Outcome", outcome: o }) as const),
         Effect.catchAll((error) =>
@@ -1080,6 +1102,21 @@ export const createApp = (opts: AppOptions = {}) => {
           }
         } as const
       }
+      if (outcome.outcome._tag === "Unresolved") {
+        // Known but not decidable yet: retryable 202, never success/failure.
+        return {
+          status: 202,
+          body: {
+            ok: false,
+            code: PolicyErrorCode.TX_PENDING,
+            message:
+              outcome.outcome.reason === "metadata-unavailable"
+                ? "Transaction found but its execution result is unavailable — retry."
+                : "Transaction known but not yet confirmed — retry.",
+            confirmationStatus: outcome.outcome.confirmationStatus,
+          }
+        } as const
+      }
       return {
         status: 200,
         body: { ok: true, receipt: outcome.outcome.receipt }
@@ -1096,6 +1133,9 @@ export const createApp = (opts: AppOptions = {}) => {
     }
     if (out.status === 400) {
       return c.json(out.body, 400)
+    }
+    if (out.status === 202) {
+      return c.json(out.body, 202)
     }
     return c.json(out.body, 500)
   })

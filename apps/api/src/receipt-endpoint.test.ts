@@ -6,7 +6,8 @@ process.env["MERCHANT_WALLET"] = "11111111111111111111111111111111"
 process.env["MERCHANT_ACTIVE"] = "true"
 process.env["INTENT_SEAL_SECRET"] = "test-seal-secret-000000000000000000000001"
 
-const SIG = "SIG_valid_11111111111111111111111111111111111111111111"
+const SIG =
+  "59TuJ5S315My8os456VYxib2MFVX9JTGB8VB78HXvQJX7qPJTkfMnhFi3gQ5EjmL4QffiKhiFLXYksxEuUCpcYhi"
 
 const stubReads = (overrides: Partial<SolanaReads> = {}): SolanaReads => ({
   getLatestBlockhash: async () => "B",
@@ -83,5 +84,37 @@ describe("POST /api/tx/receipt", () => {
     })
     const res = await post(app, { signature: SIG })
     expect(res.status).toBe(500)
+  })
+
+  it("returns retryable 202 TX_PENDING for processed-only signatures", async () => {
+    const app = createApp({
+      solanaReads: stubReads({
+        getTransaction: async () => null,
+        getSignatureStatuses: async () => [{ confirmationStatus: "processed" }],
+      }),
+    })
+    const res = await post(app, { signature: SIG })
+    expect(res.status).toBe(202)
+    const body = (await res.json()) as {
+      ok: boolean
+      code: string
+      confirmationStatus: string
+    }
+    expect(body.ok).toBe(false)
+    expect(body.code).toBe("TX_PENDING")
+    expect(body.confirmationStatus).toBe("processed")
+  })
+
+  it("fails closed when the backend RPC serves the wrong cluster", async () => {
+    const app = createApp({
+      solanaReads: stubReads({
+        getGenesisHash: async () =>
+          "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+      }),
+    })
+    const res = await post(app, { signature: SIG })
+    expect(res.status).toBe(500)
+    const body = (await res.json()) as { code: string }
+    expect(body.code).toBe("INTERNAL_ERROR")
   })
 })

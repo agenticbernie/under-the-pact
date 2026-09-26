@@ -379,3 +379,13 @@ success flag, raw transaction) for the verifier. Missing signatures are
 (executionErr); RPC transport failures are typed 500 INTERNAL_ERROR —
 the three are never confused. Observation only: nothing here decides
 success (BER-144 does that from this raw input).
+
+## Receipt review hardening (PR #17, Qodo + Codex)
+
+- Processed-only signatures are Unresolved (202 TX_PENDING), never 404;
+  null metadata is Unresolved, never success.
+- Signatures must decode as base58 64-byte Ed25519 before any RPC call.
+- Receipts carry parsed transfer fields (authority, ATAs, mint, amount,
+  decimals) plus raw tx; unparsable payments yield transfer: null for the
+  verifier to reject as unverifiable.
+- The receipt endpoint verifies the backend RPC cluster first.
