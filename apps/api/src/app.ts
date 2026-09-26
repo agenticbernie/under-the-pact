@@ -25,9 +25,23 @@ import {
 } from "./intent/confirm.js"
 import {
   LifecycleStore,
-  lifecycleMemoryLayer
+  lifecycleStoreLayerFromEnv
 } from "./policy/lifecycle.js"
-import { validateIntent } from "./policy/engine.js"
+import { checkPolicyForBuild, validateIntent } from "./policy/engine.js"
+import { assertConfirmed } from "./intent/confirm.js"
+import {
+  assertRpcCluster,
+  buildUsdcTransfer,
+  liveSolanaReads,
+  verifySignedTransfer,
+  type SolanaReads,
+} from "./solana/txbuilder.js"
+import {
+  AttemptLog,
+  attemptMemoryLayer,
+  createAttemptId,
+  submitSignedTransaction,
+} from "./solana/submit.js"
 
 /**
  * Hono skeleton (BER-129).
@@ -41,13 +55,20 @@ export interface AppOptions {
   llmLayer?: Layer.Layer<LlmClient>
   /** Override the lifecycle store in tests — one fresh store per app. */
   lifecycleLayer?: Layer.Layer<LifecycleStore>
+  /** Override the attempt log in tests — one fresh log per app. */
+  attemptLayer?: Layer.Layer<AttemptLog>
+  /** Override Solana reads in tests — production reads live RPC. */
+  solanaReads?: SolanaReads
 }
 
 export const createApp = (opts: AppOptions = {}) => {
   const app = new Hono()
   // One store per app instance: isolated in tests, single copy per
-  // process/isolate in production (Sprint 3 Postgres replaces it).
-  const lifecycle = opts.lifecycleLayer ?? lifecycleMemoryLayer()
+  // process/isolate in production. LIFECYCLE_STORE selects the backend
+  // (memory in Sprint 2; Sprint 3 adds postgres). Unknown values throw
+  // loudly at boot instead of silently degrading.
+  const lifecycle = opts.lifecycleLayer ?? lifecycleStoreLayerFromEnv()
+  const attempts = opts.attemptLayer ?? attemptMemoryLayer()
 
   // FE origins: local Astro + Cloudflare Pages preview/prod (wired via env later)
   app.use(
@@ -497,6 +518,489 @@ export const createApp = (opts: AppOptions = {}) => {
     })
     const out = await Effect.runPromise(
       program.pipe(Effect.provide(PactConfigLive), Effect.provide(lifecycle))
+    )
+    if (out.status === 200) {
+      return c.json(out.body, 200)
+    }
+    if (out.status === 422) {
+      return c.json(out.body, 422)
+    }
+    if (out.status === 400) {
+      return c.json(out.body, 400)
+    }
+    return c.json(out.body, 500)
+  })
+
+  // BER-140: deterministic USDC transfer construction (C-009).
+  // Trust chain: schema decode -> seal verify -> execution gate
+  // (sealed CONFIRMED snapshot, unexpired) -> fresh policy re-run ->
+  // build from intent + merchant config. Returns an UNSIGNED transaction
+  // for the wallet to sign (BER-141); nothing here signs or broadcasts.
+  app.post("/api/tx/build", async (c) => {
+    let body: unknown
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json(
+        {
+          ok: false,
+          code: PolicyErrorCode.INVALID_REQUEST,
+          message: "Request body must be JSON with 'intent' and 'sender'."
+        },
+        400
+      )
+    }
+    const raw =
+      typeof body === "object" && body !== null
+        ? (body as { intent?: unknown; sender?: unknown })
+        : {}
+    const shaped = Schema.decodeUnknownEither(PaymentIntent)(raw.intent)
+    if (shaped._tag === "Left" || typeof raw.sender !== "string") {
+      return c.json(
+        {
+          ok: false,
+          code: PolicyErrorCode.INVALID_REQUEST,
+          message: "Body must carry a canonical 'intent' and a 'sender' address."
+        },
+        400
+      )
+    }
+    const program = Effect.gen(function* () {
+      const cfg = yield* PactConfigService
+      const sealSecret = yield* Config.string("INTENT_SEAL_SECRET").pipe(
+        Config.withDefault("")
+      )
+      // Gate first: only the current sealed CONFIRMED snapshot builds.
+      const gated = yield* assertConfirmed(
+        shaped.right,
+        sealSecret
+      ).pipe(
+        Effect.map((intent) => ({ _tag: "Gated", intent }) as const),
+        Effect.catchAll((error) =>
+          Effect.succeed({ _tag: "Rejected", error } as const)
+        )
+      )
+      if (gated._tag === "Rejected") {
+        // Forged input is a 400 (consistent with /validate and /confirm);
+        // misconfiguration is a logged 500; policy verdicts are 422.
+        const status =
+          gated.error.code === PolicyErrorCode.INTERNAL_ERROR
+            ? 500
+            : gated.error.code === PolicyErrorCode.INVALID_REQUEST
+              ? 400
+              : 422
+        if (status === 500) {
+          console.error("[pact-api] build gate failed:", gated.error.message)
+        }
+        return {
+          status,
+          body: {
+            ok: false,
+            code: gated.error.code,
+            message: gated.error.message
+          }
+        } as const
+      }
+      // Fresh policy re-check (no reseal, no record): config may have
+      // changed since confirmation. checkPolicyForBuild answers only
+      // "still clean?" over the gated snapshot.
+      const rechecked = yield* checkPolicyForBuild(gated.intent, {
+        merchant: cfg.merchant
+      }).pipe(
+        Effect.map((intent) => ({ _tag: "Clean", intent }) as const),
+        Effect.catchAll((error) =>
+          Effect.succeed({ _tag: "Rejected", error } as const)
+        )
+      )
+      if (rechecked._tag === "Rejected") {
+        const status =
+          rechecked.error.code === PolicyErrorCode.INTERNAL_ERROR ? 500 : 422
+        if (status === 500) {
+          console.error(
+            "[pact-api] build recheck failed:",
+            rechecked.error.message
+          )
+        }
+        return {
+          status,
+          body: {
+            ok: false,
+            code: rechecked.error.code,
+            message: rechecked.error.message
+          }
+        } as const
+      }
+      // Builder INVALID_REQUEST (e.g. malformed sender) is a 400 like other
+      // malformed inputs — not a 422 policy verdict (Codex PR #12).
+      const built = yield* buildUsdcTransfer({
+        intent: gated.intent,
+        sender: raw.sender as string,
+        merchant: cfg.merchant,
+        rpcUrl: cfg.solanaRpcUrl,
+        reads: opts.solanaReads
+      }).pipe(
+        Effect.map((tx) => ({ _tag: "Built", tx }) as const),
+        Effect.catchAll((error) =>
+          Effect.succeed({ _tag: "Rejected", error } as const)
+        )
+      )
+      if (built._tag === "Rejected") {
+        // Malformed builder input (e.g. bad sender) is a 400 like other
+        // malformed inputs — not a 422 policy verdict (Codex PR #12).
+        const status =
+          built.error.code === PolicyErrorCode.INTERNAL_ERROR
+            ? 500
+            : built.error.code === PolicyErrorCode.INVALID_REQUEST
+              ? 400
+              : 422
+        if (status === 500) {
+          console.error("[pact-api] build failed:", built.error.message)
+        }
+        return {
+          status,
+          body: {
+            ok: false,
+            code: built.error.code,
+            message: built.error.message
+          }
+        } as const
+      }
+      return {
+        status: 200,
+        body: { ok: true, transaction: built.tx }
+      } as const
+    })
+    const out = await Effect.runPromise(
+      program.pipe(
+        Effect.provide(PactConfigLive),
+        Effect.provide(lifecycle)
+      )
+    )
+    if (out.status === 200) {
+      return c.json(out.body, 200)
+    }
+    if (out.status === 422) {
+      return c.json(out.body, 422)
+    }
+    if (out.status === 400) {
+      return c.json(out.body, 400)
+    }
+    return c.json(out.body, 500)
+  })
+
+  // BER-142: submit the user-signed transaction (C-010).
+  // Trust chain: schema decode -> seal verify -> execution gate (stored
+  // CONFIRMED snapshot) -> broadcast signed bytes -> consume to SUBMITTED
+  // -> record attempt. A signature proves SUBMISSION ONLY — never success
+  // (verification is Sprint 3, BER-143/144). Failures record FAILED
+  // attempts and return failure; replays get DUPLICATE_INTENT.
+  app.post("/api/tx/submit", async (c) => {
+    let body: unknown
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json(
+        {
+          ok: false,
+          code: PolicyErrorCode.INVALID_REQUEST,
+          message: "Request body must be JSON with 'intent' and 'signedTransaction'."
+        },
+        400
+      )
+    }
+    const raw =
+      typeof body === "object" && body !== null
+        ? (body as { intent?: unknown; signedTransaction?: unknown })
+        : {}
+    const shaped = Schema.decodeUnknownEither(PaymentIntent)(raw.intent)
+    if (shaped._tag === "Left" || typeof raw.signedTransaction !== "string") {
+      return c.json(
+        {
+          ok: false,
+          code: PolicyErrorCode.INVALID_REQUEST,
+          message: "Body must carry a canonical 'intent' and a 'signedTransaction'."
+        },
+        400
+      )
+    }
+    const program = Effect.gen(function* () {
+      const submittedAt = new Date().toISOString()
+      const sealSecret = yield* Config.string("INTENT_SEAL_SECRET").pipe(
+        Config.withDefault("")
+      )
+      if (sealSecret.trim().length === 0) {
+        console.error("[pact-api] intent sealing not configured")
+        return {
+          status: 500,
+          body: {
+            ok: false,
+            code: PolicyErrorCode.INTERNAL_ERROR,
+            message: "Intent sealing is not configured."
+          }
+        } as const
+      }
+      if (!verifyIntentSeal(shaped.right, sealSecret)) {
+        return {
+          status: 400,
+          body: {
+            ok: false,
+            code: PolicyErrorCode.INVALID_REQUEST,
+            message:
+              "Intent seal invalid — submit intents only as received from /confirm."
+          }
+        } as const
+      }
+      const store = yield* LifecycleStore
+      const attempts = yield* AttemptLog
+      // Latest attempt of any status: DUPLICATE answers restore it so a
+      // lost first response still reconciles (Codex P2 PR #15).
+      const latestAttempt = () => {
+        const list = attempts.list(shaped.right.intentId)
+        return list.length > 0 ? list[list.length - 1] : undefined
+      }
+      const duplicateBody = (inFlight: boolean) => {
+        const prior = latestAttempt()
+        return {
+          ok: false as const,
+          code: PolicyErrorCode.DUPLICATE_INTENT,
+          message: inFlight
+            ? "Submission already in flight or of unknown outcome — reconcile before retrying, do not rebuild blindly."
+            : "Intent already submitted — pending verification.",
+          attempt: prior
+            ? {
+                intentId: prior.intentId,
+                signature: prior.transactionSignature,
+                status: prior.status,
+                submittedAt: prior.submittedAt,
+              }
+            : undefined,
+          possibleSignature:
+            prior?.status === "INDETERMINATE"
+              ? (prior.transactionSignature ?? undefined)
+              : undefined,
+        }
+      }
+      // Fast duplicate check, narrowed (Codex P2 PR #15): only SUBMITTING
+      // or SUBMITTED shortcut. Any other stored state (VALIDATED,
+      // CANCELLED, unknown) falls through to the gate for its proper
+      // confirmation/lifecycle error instead of a false duplicate.
+      const preRecord = store.get(shaped.right.intentId)
+      if (
+        preRecord !== undefined &&
+        (preRecord.status === "SUBMITTING" || preRecord.status === "SUBMITTED")
+      ) {
+        return {
+          status: 422,
+          body: duplicateBody(preRecord.status === "SUBMITTING"),
+        } as const
+      }
+      const gated = yield* assertConfirmed(
+        shaped.right,
+        sealSecret
+      ).pipe(
+        Effect.map((intent) => ({ _tag: "Gated", intent }) as const),
+        Effect.catchAll((error) =>
+          Effect.succeed({ _tag: "Rejected", error } as const)
+        )
+      )
+      if (gated._tag === "Rejected") {
+        const status =
+          gated.error.code === PolicyErrorCode.INTERNAL_ERROR
+            ? 500
+            : gated.error.code === PolicyErrorCode.INVALID_REQUEST
+              ? 400
+              : 422
+        if (status === 500) {
+          console.error("[pact-api] submit gate failed:", gated.error.message)
+        }
+        return { status, body: { ok: false, code: gated.error.code, message: gated.error.message } } as const
+      }
+      // The signed bytes must BE the authorized build (Qodo 1 + Codex P1):
+      // same message, expected sender, valid crypto — else 400 pre-broadcast.
+      const cfg = yield* PactConfigService
+      const checked = yield* verifySignedTransfer(
+        raw.signedTransaction as string,
+        gated.intent,
+        cfg.merchant
+      ).pipe(
+        Effect.map((v) => ({ _tag: "Checked", verified: v }) as const),
+        Effect.catchAll((error) =>
+          Effect.succeed({ _tag: "Rejected", error } as const)
+        )
+      )
+      if (checked._tag === "Rejected") {
+        const status =
+          checked.error.code === PolicyErrorCode.INTERNAL_ERROR ? 500 : 400
+        if (status === 500) {
+          console.error("[pact-api] submit verify failed:", checked.error.message)
+        }
+        return {
+          status,
+          body: { ok: false, code: checked.error.code, message: checked.error.message },
+        } as const
+      }
+      // Fresh policy re-check before anything irreversible (Codex P1
+      // PR #15): kill-switch, limits, or recipient may have changed since
+      // confirmation. Uses the internal check (no reseal/record).
+      const rechecked = yield* checkPolicyForBuild(gated.intent, {
+        merchant: cfg.merchant,
+      }).pipe(
+        Effect.map(() => ({ _tag: "Clean" }) as const),
+        Effect.catchAll((error) =>
+          Effect.succeed({ _tag: "Rejected", error } as const)
+        )
+      )
+      if (rechecked._tag === "Rejected") {
+        const status =
+          rechecked.error.code === PolicyErrorCode.INTERNAL_ERROR ? 500 : 422
+        if (status === 500) {
+          console.error(
+            "[pact-api] submit recheck failed:",
+            rechecked.error.message
+          )
+        }
+        return {
+          status,
+          body: {
+            ok: false,
+            code: rechecked.error.code,
+            message: rechecked.error.message,
+          },
+        } as const
+      }
+      // Backend cluster verified BEFORE reserving (Codex P2 PR #15): a
+      // genesis failure or mismatch must not consume CONFIRMED into a
+      // stuck INDETERMINATE. The broadcast path re-checks defensively.
+      const reads =
+        opts.solanaReads ?? liveSolanaReads(cfg.solanaRpcUrl)
+      const cluster = yield* assertRpcCluster(reads, gated.intent.network).pipe(
+        Effect.map(() => ({ _tag: "Clean" }) as const),
+        Effect.catchAll((error) =>
+          Effect.succeed({ _tag: "Rejected", error } as const)
+        )
+      )
+      if (cluster._tag === "Rejected") {
+        console.error(
+          "[pact-api] submit cluster check failed:",
+          cluster.error.message
+        )
+        return {
+          status: 500,
+          body: {
+            ok: false,
+            code: PolicyErrorCode.INTERNAL_ERROR,
+            message: cluster.error.message,
+          },
+        } as const
+      }
+      // Reserve BEFORE broadcast (Qodo 2 + Codex P1): concurrent retries
+      // can never both reach the network for one intent.
+      if (
+        !store.consume(gated.intent.intentId, "CONFIRMED", {
+          status: "SUBMITTING",
+          seal: gated.intent.seal as string,
+          updatedAt: submittedAt,
+        })
+      ) {
+        return {
+          status: 422,
+          body: duplicateBody(false),
+        } as const
+      }
+      const broadcast = yield* submitSignedTransaction({
+        signedTransaction: raw.signedTransaction as string,
+        reads,
+        network: gated.intent.network,
+      }).pipe(
+        Effect.map((r) => ({ _tag: "Sent", signature: r.signature }) as const),
+        Effect.catchAll((error) =>
+          Effect.succeed({ _tag: "Rejected", error } as const)
+        )
+      )
+      if (broadcast._tag === "Rejected") {
+        // Indeterminate (Codex P1): the RPC may have accepted before the
+        // response was lost — record INDETERMINATE with the would-be
+        // signature for explorer reconciliation, keep SUBMITTING (no
+        // auto-restore that could double-send), and never report success.
+        const attemptId = createAttemptId()
+        attempts.record({
+          attemptId,
+          intentId: gated.intent.intentId,
+          transactionSignature: checked.verified.signature,
+          status: "INDETERMINATE",
+          submittedAt,
+          failureReason: broadcast.error.message,
+        })
+        console.error("[pact-api] submit indeterminate:", broadcast.error.message)
+        return {
+          status: 500,
+          body: {
+            ok: false,
+            code: PolicyErrorCode.SUBMISSION_INDETERMINATE,
+            message:
+              "Submission outcome unknown — it may have reached Solana. Check the explorer for the possible signature before retrying; do not rebuild blindly.",
+            possibleSignature: checked.verified.signature,
+            attempt: {
+              attemptId,
+              intentId: gated.intent.intentId,
+              signature: checked.verified.signature,
+              status: "INDETERMINATE" as const,
+              submittedAt,
+            },
+          },
+        } as const
+      }
+      // Settle the reservation. Single-use: the same intent can never
+      // submit twice.
+      const finalIntent = sealIntent(
+        { ...gated.intent, status: "SUBMITTED" as const, updatedAt: submittedAt },
+        sealSecret
+      )
+      if (
+        !store.consume(gated.intent.intentId, "SUBMITTING", {
+          status: "SUBMITTED",
+          seal: finalIntent.seal as string,
+          updatedAt: submittedAt,
+        })
+      ) {
+        return {
+          status: 422,
+          body: {
+            ok: false,
+            code: PolicyErrorCode.DUPLICATE_INTENT,
+            message: "Intent already submitted — pending verification.",
+          },
+        } as const
+      }
+      const attemptId = createAttemptId()
+      attempts.record({
+        attemptId,
+        intentId: gated.intent.intentId,
+        transactionSignature: broadcast.signature,
+        status: "SUBMITTED",
+        submittedAt,
+        failureReason: null,
+      })
+      return {
+        status: 200,
+        body: {
+          ok: true,
+          attempt: {
+            attemptId,
+            intentId: gated.intent.intentId,
+            signature: broadcast.signature,
+            status: "SUBMITTED" as const,
+            submittedAt,
+          },
+        },
+      } as const
+    })
+    const out = await Effect.runPromise(
+      program.pipe(
+        Effect.provide(PactConfigLive),
+        Effect.provide(lifecycle),
+        Effect.provide(attempts)
+      )
     )
     if (out.status === 200) {
       return c.json(out.body, 200)

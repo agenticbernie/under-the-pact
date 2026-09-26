@@ -7,13 +7,14 @@ import {
   type PaymentIntent as PaymentIntentType
 } from "@pact/shared"
 import {
+  checkPolicyForBuild,
   validateIntent,
   type PolicyContext,
   type PolicyError
 } from "./engine.js"
 
 const DUMMY_WALLET = "11111111111111111111111111111111"
-const DEVNET_MINT = "4zMMC9sEqf9MKyRbf3Tx3sQAr1BLWnCQcHjEXtGbm4o"
+const DEVNET_MINT = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
 const NOW = new Date("2030-01-01T00:00:00.000Z")
 
 const merchant: MerchantConfig = {
@@ -90,6 +91,26 @@ describe("policy engine (BER-134 + BER-135)", () => {
   it("only PARSED intents enter validation", async () => {
     const base = Schema.decodeUnknownSync(PaymentIntent)(validIntentFixture())
     expect(await codeOf({ ...base, status: "DRAFT" })).toBe("NOT_VALIDATED")
+  })
+
+  it("keeps CONFIRMED out of public validation (Qodo/Codex PR #12)", async () => {
+    const base = Schema.decodeUnknownSync(PaymentIntent)(validIntentFixture())
+    expect(await codeOf({ ...base, status: "CONFIRMED" })).toBe("NOT_VALIDATED")
+  })
+
+  it("checkPolicyForBuild re-checks CONFIRMED without resealing", async () => {
+    const base = Schema.decodeUnknownSync(PaymentIntent)(validIntentFixture())
+    const confirmed = { ...base, status: "CONFIRMED" as const }
+    const ok = await Effect.runPromiseExit(checkPolicyForBuild(confirmed, ctx, NOW))
+    expect(ok._tag).toBe("Success")
+    const expired = await Effect.runPromiseExit(
+      checkPolicyForBuild(confirmed, ctx, new Date("2030-01-01T00:15:00.001Z"))
+    )
+    expect(expired._tag).toBe("Failure")
+    const cancelled = await Effect.runPromiseExit(
+      checkPolicyForBuild({ ...base, status: "CANCELLED" as const }, ctx, NOW)
+    )
+    expect(cancelled._tag).toBe("Failure")
   })
 
   it("BER-135: EXPIRED, INVALID_AMOUNT, RECIPIENT_MISMATCH", async () => {

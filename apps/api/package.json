@@ -16,6 +16,9 @@
   "dependencies": {
     "@hono/node-server": "^1.13.7",
     "@pact/shared": "workspace:*",
+    "@solana/spl-token": "^0.4.15",
+    "@solana/web3.js": "^1.99.0",
+    "bs58": "^6.0.0",
     "dotenv": "^18.0.1",
     "effect": "^3.16.6",
     "hono": "^4.7.5",

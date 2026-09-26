@@ -110,7 +110,7 @@ export const decideConfirmation = (
         sealSecret
       ) as CancelledIntent
       if (
-        !store.consume(intent.intentId, {
+        !store.consume(intent.intentId, "VALIDATED", {
           status: "CANCELLED",
           seal: cancelled.seal as string,
           updatedAt: now.toISOString()
@@ -142,7 +142,7 @@ export const decideConfirmation = (
       sealSecret
     ) as ConfirmedIntent
     if (
-      !store.consume(intent.intentId, {
+      !store.consume(intent.intentId, "VALIDATED", {
         status: "CONFIRMED",
         seal: confirmed.seal as string,
         updatedAt: now.toISOString()

@@ -16,7 +16,12 @@ import { Context, Layer } from "effect"
  * documented, replaced by Postgres in Sprint 3).
  */
 
-export type StoredStatus = "VALIDATED" | "CONFIRMED" | "CANCELLED"
+export type StoredStatus =
+  | "VALIDATED"
+  | "CONFIRMED"
+  | "CANCELLED"
+  | "SUBMITTING"
+  | "SUBMITTED"
 
 export interface LifecycleSnapshot {
   status: StoredStatus
@@ -35,14 +40,23 @@ export interface LifecycleStoreApi {
    */
   recordValidated(intentId: string, seal: string, updatedAt: string): void
   /**
-   * Atomically move VALIDATED -> next. Returns false unless the current
-   * record exists and is still VALIDATED (single-use). Synchronous:
-   * atomic on Node's single thread; Sprint 3 uses a SERIALIZABLE
-   * transaction / advisory lock for the same guarantee across processes.
+   * Atomically move an expected state -> next. Returns false unless the
+   * current record exists and still holds the expected status (single-use).
+   * Confirmation consumes VALIDATED; submission reserves CONFIRMED ->
+   * SUBMITTING *before* the RPC call (Qodo/Codex PR #14: concurrent
+   * retries must never both broadcast) and settles SUBMITTING ->
+   * SUBMITTED after acceptance. Synchronous: atomic on Node's single
+   * thread; Sprint 3 uses a SERIALIZABLE transaction / advisory lock for
+   * the same guarantee across processes.
    */
   consume(
     intentId: string,
-    next: { status: "CONFIRMED" | "CANCELLED"; seal: string; updatedAt: string }
+    expected: "VALIDATED" | "CONFIRMED" | "SUBMITTING",
+    next: {
+      status: "CONFIRMED" | "CANCELLED" | "SUBMITTING" | "SUBMITTED"
+      seal: string
+      updatedAt: string
+    }
   ): boolean
 }
 
@@ -57,9 +71,9 @@ export const createMemoryLifecycleStore = (): LifecycleStoreApi => {
       }
       records.set(intentId, { status: "VALIDATED", seal, updatedAt })
     },
-    consume: (intentId, next) => {
+    consume: (intentId, expected, next) => {
       const current = records.get(intentId)
-      if (current === undefined || current.status !== "VALIDATED") {
+      if (current === undefined || current.status !== expected) {
         return false
       }
       records.set(intentId, { ...next, updatedAt: next.updatedAt })
@@ -81,3 +95,24 @@ export class LifecycleStore extends Context.Tag("LifecycleStore")<
 /** Fresh isolated memory layer: per app instance (tests) / isolate (prod). */
 export const lifecycleMemoryLayer = (): Layer.Layer<LifecycleStore> =>
   Layer.succeed(LifecycleStore, createMemoryLifecycleStore())
+
+/**
+ * Production selector (Qodo PR #12 problem 3): LIFECYCLE_STORE chooses the
+ * backend. Sprint 2 ships memory only — correct for local single-process
+ * runs, but each Neon isolate holds its own copy, so validate > confirm >
+ * build landing on different isolates cannot share records. Postgres
+ * arrives in Sprint 3 (BER-145/146) behind this same variable with no
+ * changes to confirm.ts/app.ts. Anything but "memory" fails loudly now
+ * instead of silently degrading later.
+ */
+export const lifecycleStoreLayerFromEnv = (): Layer.Layer<LifecycleStore> => {
+  const backend = (process.env["LIFECYCLE_STORE"] ?? "memory")
+    .trim()
+    .toLowerCase()
+  if (backend !== "memory") {
+    throw new Error(
+      `Unsupported LIFECYCLE_STORE="${backend}": Sprint 3 adds postgres; memory is the only Sprint 2 backend.`
+    )
+  }
+  return lifecycleMemoryLayer()
+}

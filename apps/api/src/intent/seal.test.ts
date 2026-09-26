@@ -32,7 +32,7 @@ describe("intent seal (Qodo PR #7)", () => {
       { amountMicroUsdc: 1 },
       { expiry: "2031-01-01T00:15:00.000Z" },
       { status: "VALIDATED" },
-      { recipient: "4zMMC9sEqf9MKyRbf3Tx3sQAr1BLWnCQcHjEXtGbm4o" }
+      { recipient: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU" }
     ]
     for (const patch of patches) {
       expect(

@@ -11,7 +11,7 @@ import { minimalValidIntentFixture } from "./fixtures.js"
 
 // System program address: valid base58, decodes to 32 bytes. Test-only dummy.
 const DUMMY_WALLET = "11111111111111111111111111111111"
-const DEVNET_USDC_MINT = "4zMMC9sEqf9MKyRbf3Tx3sQAr1BLWnCQcHjEXtGbm4o"
+const DEVNET_USDC_MINT = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
 
 describe("shared schema skeleton (BER-129)", () => {
   it("decodes a minimal intent skeleton", () => {

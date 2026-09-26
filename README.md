@@ -209,7 +209,6 @@ Sprint 1 adapter is per app instance/isolate; Sprint 3 (BER-145/146)
 swaps in Postgres with no changes to confirm.ts/app.ts.
 
 ## Sprint 2 kickoff — Controlled Solana USDC Payment (BER-128)
-
 Scope: wallet connection → network/balance preflight → USDC transfer
 build from CONFIRMED intents only → user wallet signing → submission →
 signature capture. Issues: BER-138 wallet adapter, BER-139 preflight,
@@ -220,3 +219,153 @@ approved intent. Standing rules carry over: confirmation-first (nothing
 builds without a sealed CONFIRMED intent via assertConfirmed), no
 private-key custody, deterministic code owns policy, Solana is the
 source of truth for execution.
+
+## Wallet adapter (BER-138, C-007)
+One supported wallet (Phantom) via `@solana/wallet-adapter-react` in a
+`client:only` island (`apps/web/src/components/`). Connection states
+(disconnected/connecting/connected), address display, and explicit
+unsupported-wallet/network/mismatch states; no signing calls here
+(signing is BER-141). Keys never leave the wallet by construction.
+Frontend network comes from `PUBLIC_SOLANA_NETWORK` (+ optional
+`PUBLIC_SOLANA_RPC_URL` override) and is cross-checked against the
+backend policy network from `/api/merchant` — both must match devnet
+for the PoC demo. Two review hardening (PR #10): the RPC endpoint's
+genesis hash is probed and must match the selected cluster (a mainnet
+override blocks the wallet UI — real-money risk), and backend-network
+verification is an explicit loading/verified/error tri-state (failures
+show an alert, never a silent match). Disconnecting an unsupported
+wallet also clears the adapter selection so the chooser reopens.
+
+## Preflight checks (BER-139, C-008)
+Client-side reads after CONFIRMED (`PreflightPanel` island, listening for
+`pact:confirmed`): wallet connected, cluster genesis match, SOL fee
+reserve (>= 0.005), USDC token account + balance vs the approved amount.
+Authority order: the sealed intent's network governs (frontend/backend
+disagreement fails explicitly); genesis mismatches block; probe and RPC
+failures report RPC_UNREACHABLE, never WRONG_NETWORK/NO_USDC_ACCOUNT
+(confirmed absence via getAccountInfo is the only path to NO_USDC_ACCOUNT).
+Stale runs are discarded by generation guard and every result carries the
+intent ID; disconnect revokes, account switch reruns, and a Re-check
+button retries the stored intent. Stable codes (WALLET_NOT_CONNECTED, WRONG_NETWORK,
+RPC_UNREACHABLE, INSUFFICIENT_SOL, NO_USDC_ACCOUNT, INSUFFICIENT_USDC)
+with actionable messages; failed preflight blocks signing (BER-141 gates
+on it). Pure reads only — nothing here can create a transaction.
+
+## Transaction builder (BER-140, C-009)
+
+Deterministic server-side construction: sealed CONFIRMED intent (gated
+via assertConfirmed) + fresh policy re-run + sender + merchant config +
+chain reads (mint decimals, merchant ATA existence, blockhash) → unsigned
+base64 `Transaction` (TransferChecked, feePayer = sender). Served at
+`POST /api/tx/build {intent, sender}`: 400 forged/malformed, 422 policy
+and MERCHANT_ATA_MISSING (merchant ATA must be pre-created before the
+demo — creating it inside the payment would silently charge rent),
+500 + logged on RPC/config failures.
+
+The builder can never sign or broadcast (no signer imports; empty
+signatures by construction) and derives every execution-critical field
+from the sealed intent + merchant config — including an exact integer
+micro-USDC amount with chain-read decimals. Sender must equal the bound
+wallet when the intent carries one. The web build card renders the full
+unsigned details for inspection; signing lands in BER-141.
+
+## Review hardening (PR #12, Qodo + Codex)
+
+- Mint precision: builder requires exactly 6 decimals (micro-USDC is
+  six-decimal by definition); anything else is INTERNAL_ERROR, and
+  builder INVALID_REQUEST (e.g. malformed sender) maps to 400.
+- CONFIRMED stays out of public validation: re-checks at build go through
+  internal checkPolicyForBuild (no reseal/record), so the lifecycle store
+  never disagrees with a returned snapshot.
+- Lifecycle store: LIFECYCLE_STORE selects the backend (memory in Sprint 2;
+  Postgres in Sprint 3 with no caller changes). Memory is per isolate —
+  demo locally (single process) or accept single-isolate behavior; unknown
+  values fail boot loudly.
+- Web build card: preflight failures keep the confirmed intent for retry;
+  build responses render only for the still-current intent + sender.
+
+## Wallet signing flow (BER-141, C-007)
+
+`SigningPanel` island: enabled only when confirmation + preflight +
+unsigned build line up on the same intent, sender, and connected wallet
+(pure canSign gate, re-checked at click time). The wallet popup signs
+the user-reviewed transaction — Pact never sees a private key, only the
+signed bytes (emitted as `pact:signed` for BER-142 submission) or a
+rejection. States: signing / signed-ready / rejected-safe /
+error — rejection creates no payment and submits nothing. Stale
+responses are discarded by generation guard.
+
+## Signing review hardening (PR #13, Qodo + Codex)
+
+- Browser-safe base64 helpers (no Node Buffer in shipped UI code) plus the
+  `buffer` polyfill for web3.js internals at the island entry — the popup
+  previously never opened in real browsers.
+- Post-sign verification: message bytes must equal the reviewed build,
+  feePayer must equal the expected sender, and signatures must verify
+  cryptographically; otherwise the result is an error, never pact:signed.
+- Rejection is proven by code/message (4001 etc.), never by the generic
+  WalletSignTransactionError class alone.
+- Staged intent carries its expiry: signing past it is blocked (execution
+  would reject as EXPIRED anyway).
+- Wallet changes retire staged/signed state; rebuilds invalidate via
+  pact:build-invalidated; all async responses are generation-guarded.
+- Tests may use ephemeral in-memory keypairs (never shipped); shipped
+  sources must contain no key material at all.
+
+## Transaction submission (BER-142, C-010)
+
+`POST /api/tx/submit {intent, signedTransaction}`: schema decode >
+seal verify > execution gate (stored CONFIRMED snapshot) > broadcast
+signed bytes (simulation-enabled send) > consume CONFIRMED→SUBMITTED
+(single-use: replays get DUPLICATE_INTENT) > record PaymentAttempt.
+Unsigned/undecodable payloads are 400 and never broadcast; RPC failures
+record FAILED attempts (intent stays CONFIRMED for retry) and return 500,
+never success. The response carries the signature with status SUBMITTED —
+pending only, never verified success (Sprint 3 verifies on-chain).
+Attempts live in-process in Sprint 2 (Postgres in Sprint 3). The web
+submit card shows pending + signature with an explicit not-success
+warning; failures keep retry available.
+
+## Submission review hardening (PR #14, Qodo + Codex)
+
+- Submitted bytes must BE the authorized build: fee payer, program,
+  TransferChecked layout, exact amount/precision, derived ATAs, and
+  cryptographic signature validity — else 400 pre-broadcast.
+- Reserve-before-broadcast: CONFIRMED→SUBMITTING is consumed atomically
+  before the RPC call; concurrent retries can never both reach Solana.
+- Broadcast errors are INDETERMINATE (new code SUBMISSION_INDETERMINATE
+  with the would-be signature for explorer reconciliation), never silent
+  success and never an auto-restore that could double-send.
+- DUPLICATE_INTENT answers carry the recorded attempt so the UI restores
+  pending instead of claiming failure; submit stays disabled.
+- Web submit card retires signed payloads on preflight/wallet transitions
+  and generation-guards intent + sender on every response.
+- Durable Postgres for lifecycle + attempts arrives in Sprint 3
+  (BER-145/146); LIFECYCLE_STORE already selects the backend.
+
+## Integration review hardening (PR #15, Qodo)
+
+- Rejected/failed signing preserves the staged build with a gated retry
+  button (no more restart-the-payment dead ends).
+- verifySignedTransfer requires the exact ten-byte TransferChecked
+  payload (truncated data is INVALID_REQUEST, never a RangeError defect).
+- Durable Postgres for lifecycle + attempts stays Sprint 3 scope
+  (BER-145/146): no live Neon project exists yet, so an untestable
+  adapter would be worse than the explicit LIFECYCLE_STORE seam; local
+  single-process demo is unaffected.
+
+## Submission review hardening (PR #14, Qodo + Codex)
+
+- verifySignedTransfer binds bytes to intent (fee payer, SPL program,
+  TransferChecked layout, exact amount/precision, derived ATAs, crypto
+  validity) — 400 pre-broadcast, tested incl. foreign-program cases.
+- Reserve CONFIRMED>SUBMITTING atomically before the RPC call; settle to
+  SUBMITTED only after acceptance. Broadcast errors are INDETERMINATE
+  with the would-be signature (no auto-restore, no blind rebuild).
+- DUPLICATE_INTENT answers carry the recorded attempt (signature included)
+  so the UI restores pending; INDETERMINATE stays disabled for reconcile.
+- Fresh policy re-check (kill-switch/limits/recipient) and backend
+  genesis check run before reserving — misconfig can no longer slip
+  between confirm and submit.
+- Web submit retires signed payloads on preflight/wallet/sender changes
+  and generation-guards intent + sender on every response.
