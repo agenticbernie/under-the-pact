@@ -30,6 +30,7 @@ import {
 import { checkPolicyForBuild, validateIntent } from "./policy/engine.js"
 import { assertConfirmed } from "./intent/confirm.js"
 import {
+  assertRpcCluster,
   buildUsdcTransfer,
   liveSolanaReads,
   verifySignedTransfer,
@@ -751,36 +752,46 @@ export const createApp = (opts: AppOptions = {}) => {
       }
       const store = yield* LifecycleStore
       const attempts = yield* AttemptLog
-      const priorAttempt = () =>
-        attempts
-          .list(shaped.right.intentId)
-          .find((a) => a.status === "SUBMITTED")
-      // Fast duplicate check: SUBMITTED means this exact flow already ran
-      // (answer from the recorded attempt); SUBMITTING means a broadcast
-      // is in flight or its outcome is still unknown — either way, no
-      // second broadcast (Qodo 2 + Codex P1 PR #14).
-      // (The full gate below stays authoritative.)
+      // Latest attempt of any status: DUPLICATE answers restore it so a
+      // lost first response still reconciles (Codex P2 PR #15).
+      const latestAttempt = () => {
+        const list = attempts.list(shaped.right.intentId)
+        return list.length > 0 ? list[list.length - 1] : undefined
+      }
+      const duplicateBody = (inFlight: boolean) => {
+        const prior = latestAttempt()
+        return {
+          ok: false as const,
+          code: PolicyErrorCode.DUPLICATE_INTENT,
+          message: inFlight
+            ? "Submission already in flight or of unknown outcome — reconcile before retrying, do not rebuild blindly."
+            : "Intent already submitted — pending verification.",
+          attempt: prior
+            ? {
+                intentId: prior.intentId,
+                signature: prior.transactionSignature,
+                status: prior.status,
+                submittedAt: prior.submittedAt,
+              }
+            : undefined,
+          possibleSignature:
+            prior?.status === "INDETERMINATE"
+              ? (prior.transactionSignature ?? undefined)
+              : undefined,
+        }
+      }
+      // Fast duplicate check, narrowed (Codex P2 PR #15): only SUBMITTING
+      // or SUBMITTED shortcut. Any other stored state (VALIDATED,
+      // CANCELLED, unknown) falls through to the gate for its proper
+      // confirmation/lifecycle error instead of a false duplicate.
       const preRecord = store.get(shaped.right.intentId)
-      if (preRecord !== undefined && preRecord.status !== "CONFIRMED") {
-        const prior = priorAttempt()
-        const inFlight = preRecord.status === "SUBMITTING"
+      if (
+        preRecord !== undefined &&
+        (preRecord.status === "SUBMITTING" || preRecord.status === "SUBMITTED")
+      ) {
         return {
           status: 422,
-          body: {
-            ok: false,
-            code: PolicyErrorCode.DUPLICATE_INTENT,
-            message: inFlight
-              ? "Submission already in flight or of unknown outcome — reconcile before retrying, do not rebuild blindly."
-              : "Intent already submitted — pending verification.",
-            attempt: prior
-              ? {
-                  intentId: prior.intentId,
-                  signature: prior.transactionSignature,
-                  status: prior.status,
-                  submittedAt: prior.submittedAt,
-                }
-              : undefined,
-          }
+          body: duplicateBody(preRecord.status === "SUBMITTING"),
         } as const
       }
       const gated = yield* assertConfirmed(
@@ -828,6 +839,60 @@ export const createApp = (opts: AppOptions = {}) => {
           body: { ok: false, code: checked.error.code, message: checked.error.message },
         } as const
       }
+      // Fresh policy re-check before anything irreversible (Codex P1
+      // PR #15): kill-switch, limits, or recipient may have changed since
+      // confirmation. Uses the internal check (no reseal/record).
+      const rechecked = yield* checkPolicyForBuild(gated.intent, {
+        merchant: cfg.merchant,
+      }).pipe(
+        Effect.map(() => ({ _tag: "Clean" }) as const),
+        Effect.catchAll((error) =>
+          Effect.succeed({ _tag: "Rejected", error } as const)
+        )
+      )
+      if (rechecked._tag === "Rejected") {
+        const status =
+          rechecked.error.code === PolicyErrorCode.INTERNAL_ERROR ? 500 : 422
+        if (status === 500) {
+          console.error(
+            "[pact-api] submit recheck failed:",
+            rechecked.error.message
+          )
+        }
+        return {
+          status,
+          body: {
+            ok: false,
+            code: rechecked.error.code,
+            message: rechecked.error.message,
+          },
+        } as const
+      }
+      // Backend cluster verified BEFORE reserving (Codex P2 PR #15): a
+      // genesis failure or mismatch must not consume CONFIRMED into a
+      // stuck INDETERMINATE. The broadcast path re-checks defensively.
+      const reads =
+        opts.solanaReads ?? liveSolanaReads(cfg.solanaRpcUrl)
+      const cluster = yield* assertRpcCluster(reads, gated.intent.network).pipe(
+        Effect.map(() => ({ _tag: "Clean" }) as const),
+        Effect.catchAll((error) =>
+          Effect.succeed({ _tag: "Rejected", error } as const)
+        )
+      )
+      if (cluster._tag === "Rejected") {
+        console.error(
+          "[pact-api] submit cluster check failed:",
+          cluster.error.message
+        )
+        return {
+          status: 500,
+          body: {
+            ok: false,
+            code: PolicyErrorCode.INTERNAL_ERROR,
+            message: cluster.error.message,
+          },
+        } as const
+      }
       // Reserve BEFORE broadcast (Qodo 2 + Codex P1): concurrent retries
       // can never both reach the network for one intent.
       if (
@@ -837,27 +902,14 @@ export const createApp = (opts: AppOptions = {}) => {
           updatedAt: submittedAt,
         })
       ) {
-        const prior = priorAttempt()
         return {
           status: 422,
-          body: {
-            ok: false,
-            code: PolicyErrorCode.DUPLICATE_INTENT,
-            message: "Intent already submitted — pending verification.",
-            attempt: prior
-              ? {
-                  intentId: prior.intentId,
-                  signature: prior.transactionSignature,
-                  status: prior.status,
-                  submittedAt: prior.submittedAt,
-                }
-              : undefined,
-          },
+          body: duplicateBody(false),
         } as const
       }
       const broadcast = yield* submitSignedTransaction({
         signedTransaction: raw.signedTransaction as string,
-        reads: opts.solanaReads ?? liveSolanaReads(cfg.solanaRpcUrl),
+        reads,
         network: gated.intent.network,
       }).pipe(
         Effect.map((r) => ({ _tag: "Sent", signature: r.signature }) as const),

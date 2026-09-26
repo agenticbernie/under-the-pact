@@ -212,6 +212,11 @@ const solanaRpc = import.meta.env.PUBLIC_SOLANA_RPC_URL ?? "";
           return;
         }
         buildSender = detail.pubkey;
+        // A new sender retires any signed payload from the previous wallet:
+        // submitting old bytes under a new account must be impossible.
+        if (signedPayload !== null && signedPayload.sender !== detail.pubkey) {
+          hideSubmit();
+        }
         buildResult.textContent = "";
         btnBuild.disabled = false;
         buildCard.hidden = false;
