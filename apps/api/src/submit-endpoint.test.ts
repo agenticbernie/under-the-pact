@@ -207,8 +207,16 @@ describe("POST /api/tx/submit", () => {
     expect(first.status).toBe(200)
     const second = await post(app, { intent, signedTransaction: signed })
     expect(second.status).toBe(422)
-    const body = (await second.json()) as { code: string }
+    const body = (await second.json()) as {
+      code: string
+      attempt?: { signature: string; status: string }
+    }
     expect(body.code).toBe("DUPLICATE_INTENT")
+    // The recorded attempt restores pending instead of claiming failure.
+    expect(body.attempt?.signature).toBe(
+      "SIG_test_11111111111111111111111111111111"
+    )
+    expect(body.attempt?.status).toBe("SUBMITTED")
   })
 
   it("records broadcast errors as INDETERMINATE with reconcile data", async () => {
@@ -244,7 +252,67 @@ describe("POST /api/tx/submit", () => {
     fail = false
     const retry = await post(app, { intent, signedTransaction: signed })
     expect(retry.status).toBe(422)
-    const retryBody = (await retry.json()) as { code: string }
+    const retryBody = (await retry.json()) as {
+      code: string
+      possibleSignature?: string
+    }
     expect(retryBody.code).toBe("DUPLICATE_INTENT")
+    // The indeterminate attempt (with its would-be signature) is returned
+    // for explorer reconciliation.
+    expect(typeof retryBody.possibleSignature).toBe("string")
+  })
+
+  it("re-runs policy before reserving: deactivated merchant blocks submit (Codex P1)", async () => {
+    const app = createApp({ solanaReads: stubReads() })
+    const intent = await confirmedIntent(app)
+    const signed = await signedFor(app, intent)
+    process.env["MERCHANT_ACTIVE"] = "false"
+    try {
+      const res = await post(app, { intent, signedTransaction: signed })
+      expect(res.status).toBe(422)
+      const body = (await res.json()) as { code: string }
+      expect(body.code).toBe("UNKNOWN_MERCHANT")
+    } finally {
+      process.env["MERCHANT_ACTIVE"] = "true"
+    }
+  })
+
+  it("fails closed when the backend RPC serves the wrong cluster (Codex P2)", async () => {
+    const app = createApp({
+      solanaReads: stubReads({
+        getGenesisHash: async () =>
+          "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+      }),
+    })
+    const intent = await confirmedIntent(app)
+    // Handcraft the valid signed bytes directly: /tx/build itself enforces
+    // the cluster guard, so the endpoint helper cannot produce them here.
+    const mint = new PublicKey("4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU")
+    const tx = new Transaction()
+    tx.feePayer = payer.publicKey
+    tx.recentBlockhash = "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY"
+    tx.add(
+      createTransferCheckedInstruction(
+        await getAssociatedTokenAddress(mint, payer.publicKey, false, TOKEN_PROGRAM_ID),
+        mint,
+        await getAssociatedTokenAddress(
+          mint,
+          new PublicKey("11111111111111111111111111111111"),
+          false,
+          TOKEN_PROGRAM_ID
+        ),
+        payer.publicKey,
+        BigInt(5_000_000),
+        6
+      )
+    )
+    tx.partialSign(payer)
+    const res = await post(app, {
+      intent,
+      signedTransaction: Buffer.from(tx.serialize()).toString("base64"),
+    })
+    expect(res.status).toBe(500)
+    const body = (await res.json()) as { code: string }
+    expect(body.code).toBe("INTERNAL_ERROR")
   })
 })

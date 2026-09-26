@@ -353,3 +353,19 @@ warning; failures keep retry available.
   (BER-145/146): no live Neon project exists yet, so an untestable
   adapter would be worse than the explicit LIFECYCLE_STORE seam; local
   single-process demo is unaffected.
+
+## Submission review hardening (PR #14, Qodo + Codex)
+
+- verifySignedTransfer binds bytes to intent (fee payer, SPL program,
+  TransferChecked layout, exact amount/precision, derived ATAs, crypto
+  validity) — 400 pre-broadcast, tested incl. foreign-program cases.
+- Reserve CONFIRMED>SUBMITTING atomically before the RPC call; settle to
+  SUBMITTED only after acceptance. Broadcast errors are INDETERMINATE
+  with the would-be signature (no auto-restore, no blind rebuild).
+- DUPLICATE_INTENT answers carry the recorded attempt (signature included)
+  so the UI restores pending; INDETERMINATE stays disabled for reconcile.
+- Fresh policy re-check (kill-switch/limits/recipient) and backend
+  genesis check run before reserving — misconfig can no longer slip
+  between confirm and submit.
+- Web submit retires signed payloads on preflight/wallet/sender changes
+  and generation-guards intent + sender on every response.
