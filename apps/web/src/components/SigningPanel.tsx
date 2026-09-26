@@ -118,12 +118,11 @@ export function SigningPanel() {
 
   const walletPubkey = connected && publicKey ? publicKey.toBase58() : null;
 
-  const requestSign = () => {
+  // The signing operation, callable from Sign AND from retry buttons
+  // (Qodo/Codex PR #16: retry must reopen the wallet directly, not land
+  // back on an intermediate card requiring a second click).
+  const attemptSign = (built: BuiltTx) => {
     void (async () => {
-      if (phase.state !== "ready") {
-        return;
-      }
-      const { built } = phase;
       // Re-verify eligibility at click time with the live wallet.
       const gate = canSign({
         intentId: built.intentId,
@@ -235,10 +234,7 @@ export function SigningPanel() {
           Review the summary and try again, or cancel the payment.
         </p>
         <button
-          onClick={() => {
-            generation.current++;
-            setPhase({ state: "ready", built: phase.built });
-          }}
+          onClick={() => attemptSign(phase.built)}
           disabled={!retryGate.eligible}
         >
           Try signing again
@@ -268,14 +264,16 @@ export function SigningPanel() {
         <h3>5. Wallet signing (BER-141)</h3>
         <p role="alert">Signing failed: {phase.message}</p>
         <button
-          onClick={() => {
-            generation.current++;
-            setPhase({ state: "ready", built: phase.built });
-          }}
+          onClick={() => attemptSign(phase.built)}
           disabled={!retryGate.eligible}
         >
           Try signing again
         </button>
+        {!retryGate.eligible && (
+          <p className="hint">
+            Reconnect the wallet and pass preflight to retry.
+          </p>
+        )}
       </div>
     );
   }
@@ -291,6 +289,11 @@ export function SigningPanel() {
     buildIntentId: phase.built.intentId,
     hasUnsignedTx: true,
   });
+  const requestSign = () => {
+    if (phase.state === "ready") {
+      attemptSign(phase.built);
+    }
+  };
   return (
     <div className="card" aria-live="polite">
       <h3>5. Wallet signing (BER-141)</h3>
