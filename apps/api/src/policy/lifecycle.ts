@@ -22,6 +22,7 @@ export type StoredStatus =
   | "CANCELLED"
   | "SUBMITTING"
   | "SUBMITTED"
+  | "VERIFIED"
 
 export interface LifecycleSnapshot {
   status: StoredStatus
@@ -51,9 +52,9 @@ export interface LifecycleStoreApi {
    */
   consume(
     intentId: string,
-    expected: "VALIDATED" | "CONFIRMED" | "SUBMITTING",
+    expected: "VALIDATED" | "CONFIRMED" | "SUBMITTING" | "SUBMITTED",
     next: {
-      status: "CONFIRMED" | "CANCELLED" | "SUBMITTING" | "SUBMITTED"
+      status: "CONFIRMED" | "CANCELLED" | "SUBMITTING" | "SUBMITTED" | "VERIFIED"
       seal: string
       updatedAt: string
     }

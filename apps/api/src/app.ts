@@ -43,6 +43,7 @@ import {
   submitSignedTransaction,
 } from "./solana/submit.js"
 import { fetchReceipt } from "./solana/receipt.js"
+import { verifyPayment } from "./solana/verifier.js"
 
 /**
  * Hono skeleton (BER-129).
@@ -1136,6 +1137,229 @@ export const createApp = (opts: AppOptions = {}) => {
     }
     if (out.status === 202) {
       return c.json(out.body, 202)
+    }
+    return c.json(out.body, 500)
+  })
+
+  // BER-144: verify the on-chain payment against the approved intent (C-012).
+  // Trust chain: schema decode -> seal verify -> fetch receipt (404/202/500
+  // propagate for missing/unresolved/RPC paths) -> network match ->
+  // deterministic field verification. VERIFIED only when every check
+  // passes; the lifecycle record moves SUBMITTED -> VERIFIED atomically and
+  // the VERIFIED intent is re-sealed. Mismatches are 422 VERIFICATION_FAILED.
+  app.post("/api/tx/verify", async (c) => {
+    let body: unknown
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json(
+        {
+          ok: false,
+          code: PolicyErrorCode.INVALID_REQUEST,
+          message: "Request body must be JSON with 'intent' and 'signature'."
+        },
+        400
+      )
+    }
+    const raw =
+      typeof body === "object" && body !== null
+        ? (body as { intent?: unknown; signature?: unknown })
+        : {}
+    const shaped = Schema.decodeUnknownEither(PaymentIntent)(raw.intent)
+    if (shaped._tag === "Left" || typeof raw.signature !== "string") {
+      return c.json(
+        {
+          ok: false,
+          code: PolicyErrorCode.INVALID_REQUEST,
+          message: "Body must carry a canonical 'intent' and a 'signature'."
+        },
+        400
+      )
+    }
+    const program = Effect.gen(function* () {
+      const cfg = yield* PactConfigService
+      const sealSecret = yield* Config.string("INTENT_SEAL_SECRET").pipe(
+        Config.withDefault("")
+      )
+      if (sealSecret.trim().length === 0) {
+        console.error("[pact-api] intent sealing not configured")
+        return {
+          status: 500,
+          body: {
+            ok: false,
+            code: PolicyErrorCode.INTERNAL_ERROR,
+            message: "Intent sealing is not configured."
+          }
+        } as const
+      }
+      if (!verifyIntentSeal(shaped.right, sealSecret)) {
+        return {
+          status: 400,
+          body: {
+            ok: false,
+            code: PolicyErrorCode.INVALID_REQUEST,
+            message:
+              "Intent seal invalid — verify intents only as received from /confirm or /submit."
+          }
+        } as const
+      }
+      const store = yield* LifecycleStore
+      const reads = opts.solanaReads ?? liveSolanaReads(cfg.solanaRpcUrl)
+      // Cluster guard first: verification is meaningless on the wrong chain.
+      const cluster = yield* assertRpcCluster(reads, cfg.solanaNetwork).pipe(
+        Effect.map(() => ({ _tag: "Clean" }) as const),
+        Effect.catchAll((error) =>
+          Effect.succeed({ _tag: "Rejected", error } as const)
+        )
+      )
+      if (cluster._tag === "Rejected") {
+        console.error(
+          "[pact-api] verify cluster check failed:",
+          cluster.error.message
+        )
+        return {
+          status: 500,
+          body: {
+            ok: false,
+            code: PolicyErrorCode.INTERNAL_ERROR,
+            message: cluster.error.message,
+          },
+        } as const
+      }
+      const outcome = yield* fetchReceipt(raw.signature as string, reads).pipe(
+        Effect.map((o) => ({ _tag: "Outcome", outcome: o }) as const),
+        Effect.catchAll((error) =>
+          Effect.succeed({ _tag: "Rejected", error } as const)
+        )
+      )
+      if (outcome._tag === "Rejected") {
+        const status =
+          outcome.error.code === PolicyErrorCode.INVALID_REQUEST ? 400 : 500
+        if (status === 500) {
+          console.error("[pact-api] verify fetch failed:", outcome.error.message)
+        }
+        return {
+          status,
+          body: {
+            ok: false,
+            code: outcome.error.code,
+            message: outcome.error.message
+          }
+        } as const
+      }
+      if (outcome.outcome._tag === "Missing") {
+        return {
+          status: 404,
+          body: {
+            ok: false,
+            code: PolicyErrorCode.TX_NOT_FOUND,
+            message: "No on-chain record for this signature (yet)."
+          }
+        } as const
+      }
+      if (outcome.outcome._tag === "Unresolved") {
+        return {
+          status: 202,
+          body: {
+            ok: false,
+            code: PolicyErrorCode.TX_PENDING,
+            message: "Transaction known but not yet decidable — retry.",
+            confirmationStatus: outcome.outcome.confirmationStatus,
+          }
+        } as const
+      }
+      const verified = yield* verifyPayment(
+        shaped.right,
+        outcome.outcome.receipt,
+        cfg.merchant
+      ).pipe(
+        Effect.map((v) => ({ _tag: "Verified", verification: v }) as const),
+        Effect.catchAll((error) =>
+          Effect.succeed({ _tag: "Rejected", error } as const)
+        )
+      )
+      if (verified._tag === "Rejected") {
+        const status =
+          verified.error.code === PolicyErrorCode.INTERNAL_ERROR ? 500 : 422
+        if (status === 500) {
+          console.error("[pact-api] verify failed:", verified.error.message)
+        }
+        return {
+          status,
+          body: {
+            ok: false,
+            code: verified.error.code,
+            message: verified.error.message
+          }
+        } as const
+      }
+      // Mark successful: SUBMITTED -> VERIFIED atomically, re-sealed.
+      // Already-VERIFIED records pass through (polling-safe, no duplicate).
+      const submittedAt = new Date().toISOString()
+      const record = store.get(shaped.right.intentId)
+      if (record !== undefined && record.status === "VERIFIED") {
+        const again = sealIntent(
+          { ...shaped.right, status: "VERIFIED" as const, updatedAt: submittedAt },
+          sealSecret
+        )
+        return {
+          status: 200,
+          body: {
+            ok: true,
+            verified: verified.verification,
+            intent: again,
+          },
+        } as const
+      }
+      const marked = sealIntent(
+        { ...shaped.right, status: "VERIFIED" as const, updatedAt: submittedAt },
+        sealSecret
+      )
+      if (
+        !store.consume(shaped.right.intentId, "SUBMITTED", {
+          status: "VERIFIED",
+          seal: marked.seal as string,
+          updatedAt: submittedAt,
+        })
+      ) {
+        return {
+          status: 422,
+          body: {
+            ok: false,
+            code: PolicyErrorCode.NOT_VALIDATED,
+            message: "Intent was not submitted through this server — verify only tracks submitted payments.",
+          },
+        } as const
+      }
+      return {
+        status: 200,
+        body: {
+          ok: true,
+          verified: verified.verification,
+          intent: marked,
+        },
+      } as const
+    })
+    const out = await Effect.runPromise(
+      program.pipe(
+        Effect.provide(PactConfigLive),
+        Effect.provide(lifecycle)
+      )
+    )
+    if (out.status === 200) {
+      return c.json(out.body, 200)
+    }
+    if (out.status === 404) {
+      return c.json(out.body, 404)
+    }
+    if (out.status === 400) {
+      return c.json(out.body, 400)
+    }
+    if (out.status === 202) {
+      return c.json(out.body, 202)
+    }
+    if (out.status === 422) {
+      return c.json(out.body, 422)
     }
     return c.json(out.body, 500)
   })
