@@ -5,6 +5,7 @@ import {
   PublicKey,
   Transaction,
   type AccountInfo,
+  type VersionedTransactionResponse,
 } from "@solana/web3.js"
 import {
   createTransferCheckedInstruction,
@@ -43,6 +44,14 @@ export interface SolanaReads {
   sendRawTransaction(serialized: Uint8Array): Promise<string>
   /** Genesis hash of the connected cluster. */
   getGenesisHash(): Promise<string>
+  /** Full parsed transaction or null when the node has no record. */
+  getTransaction(
+    signature: string
+  ): Promise<VersionedTransactionResponse | null>
+  /** Confirmation status entries for signatures (null per unknown sig). */
+  getSignatureStatuses(
+    signatures: string[]
+  ): Promise<Array<{ confirmationStatus: string | null } | null>>
 }
 
 /** Genesis is immutable: cache per reads object for the process lifetime. */
@@ -104,6 +113,19 @@ export const liveSolanaReads = (rpcUrl: string): SolanaReads => {
         preflightCommitment: "confirmed",
       }),
     getGenesisHash: () => connection.getGenesisHash(),
+    getTransaction: (signature: string) =>
+      connection.getTransaction(signature, {
+        commitment: "confirmed",
+        maxSupportedTransactionVersion: 0,
+      }),
+    getSignatureStatuses: (signatures: string[]) =>
+      connection
+        .getSignatureStatuses(signatures, { searchTransactionHistory: true })
+        .then((r) =>
+          (r.value ?? []).map((v) =>
+            v === null ? null : { confirmationStatus: v.confirmationStatus ?? null }
+          )
+        ),
   }
 }
 

@@ -42,6 +42,7 @@ import {
   createAttemptId,
   submitSignedTransaction,
 } from "./solana/submit.js"
+import { fetchReceipt } from "./solana/receipt.js"
 
 /**
  * Hono skeleton (BER-129).
@@ -1010,6 +1011,131 @@ export const createApp = (opts: AppOptions = {}) => {
     }
     if (out.status === 400) {
       return c.json(out.body, 400)
+    }
+    return c.json(out.body, 500)
+  })
+
+  // BER-143: fetch the parsed on-chain result for a signature (C-011).
+  // Observation only: missing/failed/unresolved receipts are data for the
+  // verifier (BER-144), never success. RPC failures are typed INTERNAL_ERROR.
+  app.post("/api/tx/receipt", async (c) => {
+    let body: unknown
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json(
+        {
+          ok: false,
+          code: PolicyErrorCode.INVALID_REQUEST,
+          message: "Request body must be JSON with a 'signature' field."
+        },
+        400
+      )
+    }
+    const raw =
+      typeof body === "object" && body !== null
+        ? (body as { signature?: unknown })
+        : {}
+    if (typeof raw.signature !== "string" || raw.signature.trim().length === 0) {
+      return c.json(
+        {
+          ok: false,
+          code: PolicyErrorCode.INVALID_REQUEST,
+          message: "Body must carry a non-empty 'signature'."
+        },
+        400
+      )
+    }
+    const program = Effect.gen(function* () {
+      const cfg = yield* PactConfigService
+      const reads = opts.solanaReads ?? liveSolanaReads(cfg.solanaRpcUrl)
+      // Backend cluster guard first (Codex P1 PR #17): a wrong-cluster RPC
+      // would feed foreign transactions to the verifier or misreport misses.
+      const cluster = yield* assertRpcCluster(reads, cfg.solanaNetwork).pipe(
+        Effect.map(() => ({ _tag: "Clean" }) as const),
+        Effect.catchAll((error) =>
+          Effect.succeed({ _tag: "Rejected", error } as const)
+        )
+      )
+      if (cluster._tag === "Rejected") {
+        console.error(
+          "[pact-api] receipt cluster check failed:",
+          cluster.error.message
+        )
+        return {
+          status: 500,
+          body: {
+            ok: false,
+            code: PolicyErrorCode.INTERNAL_ERROR,
+            message: cluster.error.message,
+          },
+        } as const
+      }
+      const outcome = yield* fetchReceipt(raw.signature as string, reads).pipe(
+        Effect.map((o) => ({ _tag: "Outcome", outcome: o }) as const),
+        Effect.catchAll((error) =>
+          Effect.succeed({ _tag: "Rejected", error } as const)
+        )
+      )
+      if (outcome._tag === "Rejected") {
+        const status =
+          outcome.error.code === PolicyErrorCode.INVALID_REQUEST ? 400 : 500
+        if (status === 500) {
+          console.error("[pact-api] receipt fetch failed:", outcome.error.message)
+        }
+        return {
+          status,
+          body: {
+            ok: false,
+            code: outcome.error.code,
+            message: outcome.error.message
+          }
+        } as const
+      }
+      if (outcome.outcome._tag === "Missing") {
+        return {
+          status: 404,
+          body: {
+            ok: false,
+            code: PolicyErrorCode.TX_NOT_FOUND,
+            message: "No on-chain record for this signature (yet)."
+          }
+        } as const
+      }
+      if (outcome.outcome._tag === "Unresolved") {
+        // Known but not decidable yet: retryable 202, never success/failure.
+        return {
+          status: 202,
+          body: {
+            ok: false,
+            code: PolicyErrorCode.TX_PENDING,
+            message:
+              outcome.outcome.reason === "metadata-unavailable"
+                ? "Transaction found but its execution result is unavailable — retry."
+                : "Transaction known but not yet confirmed — retry.",
+            confirmationStatus: outcome.outcome.confirmationStatus,
+          }
+        } as const
+      }
+      return {
+        status: 200,
+        body: { ok: true, receipt: outcome.outcome.receipt }
+      } as const
+    })
+    const out = await Effect.runPromise(
+      program.pipe(Effect.provide(PactConfigLive))
+    )
+    if (out.status === 200) {
+      return c.json(out.body, 200)
+    }
+    if (out.status === 404) {
+      return c.json(out.body, 404)
+    }
+    if (out.status === 400) {
+      return c.json(out.body, 400)
+    }
+    if (out.status === 202) {
+      return c.json(out.body, 202)
     }
     return c.json(out.body, 500)
   })
