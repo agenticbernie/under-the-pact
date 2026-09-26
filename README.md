@@ -389,3 +389,16 @@ success (BER-144 does that from this raw input).
   decimals) plus raw tx; unparsable payments yield transfer: null for the
   verifier to reject as unverifiable.
 - The receipt endpoint verifies the backend RPC cluster first.
+
+## Payment verifier (BER-144, C-012)
+
+Deterministic `verifyPayment(intent, receipt, merchant)`: on-chain
+success, parseable transfer, network match, sender (bound wallet when
+set), exact mint, exact micro amount at six decimals, and recipient ATA
+derived from the approved wallet — every check must pass, any mismatch
+is VERIFICATION_FAILED with a stable reason. Served at
+`POST /api/tx/verify {intent, signature}` (receipt 404/202 mapped
+through, cluster-guarded): success moves SUBMITTED>VERIFIED atomically
+with a re-sealed intent (idempotent on re-poll); nothing else can reach
+VERIFIED. The web submit card has a one-line verify action; the full
+result experience lands in BER-148.

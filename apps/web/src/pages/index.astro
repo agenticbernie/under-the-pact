@@ -89,6 +89,8 @@ const solanaRpc = import.meta.env.PUBLIC_SOLANA_RPC_URL ?? "";
       <p class="hint">Broadcasts what your wallet signed. A signature proves submission only — on-chain verification lands in Sprint 3.</p>
       <p><button id="btn-submit">Submit to Solana</button></p>
       <div id="submit-result" aria-live="polite"></div>
+      <p><button id="btn-verify" hidden>Verify on-chain (BER-144)</button></p>
+      <div id="verify-result" aria-live="polite"></div>
     </div>
     <div class="card">
       <div>Backend: <code id="api-url">{apiUrl}</code></div>
@@ -337,10 +339,17 @@ const solanaRpc = import.meta.env.PUBLIC_SOLANA_RPC_URL ?? "";
       const submitCard = document.getElementById("submit-card") as HTMLDivElement;
       const submitResult = document.getElementById("submit-result") as HTMLDivElement;
       const btnSubmit = document.getElementById("btn-submit") as HTMLButtonElement;
+      const btnVerify = document.getElementById("btn-verify") as HTMLButtonElement;
+      const verifyResult = document.getElementById("verify-result") as HTMLDivElement;
+      // Last verified-submit context for the one-line verify action.
+      let verifyCtx: { intent: unknown; signature: string } | null = null;
 
       function hideSubmit() {
         signedPayload = null;
+        verifyCtx = null;
         submitResult.textContent = "";
+        verifyResult.textContent = "";
+        btnVerify.hidden = true;
         submitCard.hidden = true;
       }
 
@@ -406,6 +415,16 @@ const solanaRpc = import.meta.env.PUBLIC_SOLANA_RPC_URL ?? "";
               renderPending(body.attempt.signature, body.attempt.status, body.attempt.submittedAt);
               // Submitted: single-use — submitting again is rejected server-side.
               btnSubmit.disabled = true;
+              // One-line on-chain verification (BER-144); the full result
+              // experience lands in BER-148.
+              if (body.attempt.signature !== null) {
+                verifyCtx = {
+                  intent: confirmedIntent,
+                  signature: body.attempt.signature,
+                };
+                verifyResult.textContent = "";
+                btnVerify.hidden = false;
+              }
             } else if (body.code === "DUPLICATE_INTENT") {
               // Already submitted: restore pending from the recorded
               // attempt instead of claiming failure (Qodo 3 + Codex P2).
@@ -439,6 +458,48 @@ const solanaRpc = import.meta.env.PUBLIC_SOLANA_RPC_URL ?? "";
               submitResult.textContent = "Backend not reachable — start pnpm dev:api.";
               btnSubmit.disabled = false;
             }
+          }
+        })();
+      });
+
+      btnVerify.addEventListener("click", () => {
+        void (async () => {
+          if (verifyCtx === null) {
+            return;
+          }
+          const sent = { ...verifyCtx };
+          btnVerify.disabled = true;
+          verifyResult.textContent = "Verifying on-chain…";
+          try {
+            const res = await fetch(`${apiUrl}/api/tx/verify`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                intent: sent.intent,
+                signature: sent.signature,
+              }),
+            });
+            const body = (await res.json()) as {
+              ok: boolean;
+              code?: string;
+              message?: string;
+              verified?: { slot: number; signature: string };
+              intent?: { status: string };
+            };
+            if (res.ok && body.verified) {
+              verifyResult.textContent =
+                `Verified on-chain (slot ${body.verified.slot}). ` +
+                `Full result experience lands in BER-148.`;
+            } else if (res.status === 202 || res.status === 404) {
+              verifyResult.textContent = `Not yet decidable (${body.code || res.status}): ${body.message || "retry"}.`;
+              btnVerify.disabled = false;
+            } else {
+              verifyResult.textContent = `Verification failed (${body.code || res.status}): ${body.message || ""}.`;
+              btnVerify.disabled = false;
+            }
+          } catch (err) {
+            verifyResult.textContent = "Backend not reachable — start pnpm dev:api.";
+            btnVerify.disabled = false;
           }
         })();
       });

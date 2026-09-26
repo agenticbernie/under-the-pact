@@ -46,6 +46,7 @@ export class PolicyError extends Data.TaggedError("PolicyError")<{
     | typeof PolicyErrorCode.INTERNAL_ERROR
     | typeof PolicyErrorCode.INVALID_REQUEST
     | typeof PolicyErrorCode.SUBMISSION_INDETERMINATE
+    | typeof PolicyErrorCode.VERIFICATION_FAILED
   message: string
 }> {}
 
