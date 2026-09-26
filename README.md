@@ -369,3 +369,13 @@ warning; failures keep retry available.
   between confirm and submit.
 - Web submit retires signed payloads on preflight/wallet/sender changes
   and generation-guards intent + sender on every response.
+
+## Receipt fetcher (BER-143, C-011)
+
+`POST /api/tx/receipt {signature}` returns the parsed on-chain result
+(status finalized/confirmed/processed, slot, blockTime, execution
+success flag, raw transaction) for the verifier. Missing signatures are
+404 TX_NOT_FOUND (never success); on-chain failures arrive as data
+(executionErr); RPC transport failures are typed 500 INTERNAL_ERROR —
+the three are never confused. Observation only: nothing here decides
+success (BER-144 does that from this raw input).

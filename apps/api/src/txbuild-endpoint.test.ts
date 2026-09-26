@@ -23,6 +23,8 @@ const stubReads: SolanaReads = {
   getAccount: async () => true,
   getMintDecimals: async () => 6,
   getGenesisHash: async () => "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG",
+  getTransaction: async () => null,
+  getSignatureStatuses: async () => [null],
   sendRawTransaction: async () => "SIG_test_11111111111111111111111111111111",
 }
 
